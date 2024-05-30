@@ -42,3 +42,12 @@ jobs:
       - name: run cargo test
         working-directory: rust_driver
         run : cargo test --verbose -- --skip test_loopback_software_device # currently skip because of permission denied
+      - name: Print error log
+        if: ${{ failure() }}
+        run: |
+          tail -n 500 blue-rdma/test/system_test_mock_host.log
+          tail -n 500 blue-rdma/test/system_test_simu_a.log
+          tail -n 500 blue-rdma/test/system_test_simu_b.log
+      - name: Setup tmate session
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
