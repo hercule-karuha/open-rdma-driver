@@ -24,9 +24,10 @@ jobs:
         id: cache-building-emulator
         with:
           path: |
-            $HOME/.bash_profile
+            ~/.bash_profile
             blue-rdma/bsc-2023.01-ubuntu-22.04
             blue-rdma/test
+            ~/.cache/pip
           key: ${{ runner.os }}-blue-rdma-next
       - name: build emulator
         if: steps.cache-building-emulator.outputs.cache-hit != 'true'
@@ -34,15 +35,7 @@ jobs:
           cd ./blue-rdma
           ./setup.sh
           ./run_one.sh || true
-      - name: Save building emulator
-        id: cache-building-emulator-save
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            $HOME/.bash_profile
-            blue-rdma/bsc-2023.01-ubuntu-22.04
-            blue-rdma/test
-          key: ${{ runner.os }}-build
+          pip install scapy 
       - name: run cargo build
         working-directory: rust_driver
         run : cargo build --verbose 
