@@ -48,4 +48,4 @@ jobs:
         run : cargo build --verbose 
       - name: run cargo test
         working-directory: rust_driver
-        run : cargo test --verbose --skip test_loopback_software_device # currently skip because of permission denied
+        run : cargo test --verbose -- --skip test_loopback_software_device # currently skip because of permission denied
