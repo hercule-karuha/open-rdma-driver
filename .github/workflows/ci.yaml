@@ -10,7 +10,7 @@ jobs:
     name: CI test
     runs-on: self-hosted
     container:
-      image: ghcr.io/myrfy001/hard_devcontainer:main
+      image: ghcr.io/myrfy001/hard_devcontainer:test
       options: --privileged
     steps:
       - name: Checkout
