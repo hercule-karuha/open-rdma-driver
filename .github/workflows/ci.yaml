@@ -10,7 +10,7 @@ jobs:
     name: CI test
     runs-on: self-hosted
     container:
-      image: ghcr.io/myrfy001/hard_devcontainer@sha256:d6dc87afe4a263f1e8a6fc5a544b5cbee65593fe4f101aaf4d6d93e93602bdcc
+      image: ghcr.io/myrfy001/hard_devcontainer:main
       options: --privileged
     steps:
       - name: Checkout
@@ -35,10 +35,11 @@ jobs:
       - name: build emulator
         if: steps.cache-building-emulator.outputs.cache-hit != 'true'
         run : |
+          apt update && apt install python3-pip
+          pip3 install scapy 
           cd ./blue-rdma
           ./setup.sh
           ./run_one.sh || true
-          pip install scapy 
       - name: run cargo build
         working-directory: rust_driver
         run : cargo build --verbose 
