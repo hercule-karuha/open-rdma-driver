@@ -10,7 +10,7 @@ jobs:
     name: CI test
     runs-on: self-hosted
     container:
-      image: ubuntu:22.04
+      image: ubuntu@sha256:01f29b872827
       options: --privileged
     steps:
       - name: Checkout
