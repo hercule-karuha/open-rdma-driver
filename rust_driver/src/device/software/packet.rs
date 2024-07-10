@@ -10,13 +10,18 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    device::{ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType},
+    device::{layout::RDMA_DEFAULT_PORT, ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType},
     types::QpType,
 };
 
 use super::types::{
     AethHeader, Metadata, PayloadInfo, RdmaGeneralMeta, RdmaMessage, RdmaMessageMetaCommon,
     RethHeader,
+};
+
+use crate::device::layout::{Ipv4, Mac, Udp};
+use crate::device::layout::{
+    IPV4_HEADER_SIZE, IP_DEFAULT_PROTOCOL, MAC_HEADER_SIZE, MAC_SERVICE_LAYER_IPV4, UDP_HEADER_SIZE,
 };
 
 pub(crate) const ICRC_SIZE: usize = 4;
@@ -76,7 +81,7 @@ impl BTH {
         (self.flags & BTH_FLAGS_PAD_CNT_MASK) >> BTH_FLAGS_PAD_CNT_SHIFT
     }
 
-    #[allow(clippy::arithmetic_side_effects)]// pad_cnt is derived from payload_length,and will always be less than payload_length
+    #[allow(clippy::arithmetic_side_effects)] // pad_cnt is derived from payload_length,and will always be less than payload_length
     pub(crate) fn get_packet_real_length(&self, payload_length: usize) -> usize {
         let pad_cnt: usize = self.get_pad_cnt().into();
         payload_length - pad_cnt
@@ -457,6 +462,35 @@ pub(crate) type RdmaReadResponseMiddleHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaReadResponseLastHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaReadResponseOnlyHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaAcknowledgeHeader = RdmaHeaderRespBthAeth;
+
+pub(crate) fn check_rdma_pkt(received_data: &[u8]) -> bool {
+    let mac_header = Mac(received_data);
+    if mac_header.get_network_layer_type() != MAC_SERVICE_LAYER_IPV4 as u64 {
+        return false;
+    }
+
+    let data_without_mac = &received_data[MAC_HEADER_SIZE..];
+    if data_without_mac.len() < IPV4_HEADER_SIZE {
+        return false;
+    }
+
+    let ipv4_header = Ipv4(data_without_mac);
+    if ipv4_header.get_protocol() != IP_DEFAULT_PROTOCOL as u32 {
+        return false;
+    }
+
+    let data_without_macip = &received_data[IPV4_HEADER_SIZE..];
+    if data_without_macip.len() < UDP_HEADER_SIZE {
+        return false;
+    }
+
+    let udp_header = Udp(data_without_macip);
+    if udp_header.get_dst_port() != RDMA_DEFAULT_PORT {
+        return false;
+    }
+
+    true
+}
 
 /// The IPv4 header
 #[derive(Clone, Copy)]

@@ -3,7 +3,11 @@ use thiserror::Error;
 
 use crate::{
     device::{
-        CtrlRbDescOpcode, ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostCtrlRbDescCommon, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode, ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm
+        CtrlRbDescOpcode, ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc,
+        ToHostCtrlRbDescCommon, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescAethCode,
+        ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
+        ToHostWorkRbDescStatus, ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp,
+        ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
     },
     types::{MemAccessTypeFlag, Msn, Pmtu, Psn, QpType},
     utils::get_first_packet_max_length,
@@ -19,10 +23,13 @@ use super::{
 };
 use std::{
     collections::HashMap,
+    sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, PoisonError, RwLock},
 };
 
-#[derive(Debug,Clone)]
+const RAW_PKT_BLOCK_SIZE: usize = 4096;
+
+#[derive(Debug, Clone)]
 struct QueuePairInner {
     pmtu: Pmtu,
     qp_type: QpType,
@@ -49,6 +56,33 @@ struct MemoryRegion {
     pgt_offset: u32,
 }
 
+/// Store the config information for raw packets
+#[derive(Debug)]
+struct RawPktConfig {
+    raw_pkt_base_addr: AtomicUsize,
+    raw_pkt_buf_idx: AtomicUsize,
+}
+
+impl RawPktConfig {
+    fn new() -> Self {
+        RawPktConfig {
+            raw_pkt_base_addr: AtomicUsize::new(0),
+            raw_pkt_buf_idx: AtomicUsize::new(0),
+        }
+    }
+
+    fn get_write_addr(&self) -> usize {
+        let base = self.raw_pkt_base_addr.load(Ordering::Acquire);
+        let idx = self.raw_pkt_base_addr.load(Ordering::Acquire);
+        self.raw_pkt_base_addr.store(idx + 1, Ordering::Release);
+        base + (idx * RAW_PKT_BLOCK_SIZE)
+    }
+
+    fn set_base_addr(&self, base: usize) {
+        self.raw_pkt_base_addr.store(base, Ordering::Release);
+    }
+}
+
 /// The simulating hardware logic of `BlueRDMA`
 ///
 /// Typically, the logic needs a `NetSendAgent` and a `NetReceiveAgent` to send and receive packets.
@@ -58,6 +92,7 @@ struct MemoryRegion {
 pub(crate) struct BlueRDMALogic {
     mr_rkey_table: RwLock<HashMap<Key, Arc<RwLock<MemoryRegion>>>>,
     qp_table: RwLock<HashMap<Qpn, Arc<QueuePair>>>,
+    raw_pkt_config: RawPktConfig,
     net_send_agent: Arc<dyn NetSendAgent>,
     to_host_data_descriptor_queue: Sender<ToHostWorkRbDesc>,
     to_host_ctrl_descriptor_queue: Sender<ToHostCtrlRbDesc>,
@@ -90,6 +125,7 @@ impl BlueRDMALogic {
         BlueRDMALogic {
             mr_rkey_table: RwLock::new(HashMap::new()),
             qp_table: RwLock::new(HashMap::new()),
+            raw_pkt_config: RawPktConfig::new(),
             net_send_agent: net_sender,
             to_host_data_descriptor_queue: work_sender,
             to_host_ctrl_descriptor_queue: ctrl_sender,
@@ -286,7 +322,7 @@ impl BlueRDMALogic {
     #[allow(clippy::unwrap_in_result)]
     pub(crate) fn update(&self, desc: ToCardCtrlRbDesc) -> Result<(), BlueRdmaLogicError> {
         let opcode = to_host_ctrl_opcode(&desc);
-        let (op_id,is_succ) = match desc {
+        let (op_id, is_succ) = match desc {
             ToCardCtrlRbDesc::QpManagement(desc) => {
                 let mut qp_table = self.qp_table.write()?;
                 let qpn = Qpn::new(desc.qpn.get());
@@ -338,34 +374,28 @@ impl BlueRDMALogic {
                     // we have ensured that the qpn is not exists.
                     let _: Option<Arc<RwLock<MemoryRegion>>> = mr_table.insert(key, mr);
                 }
-                (desc.common.op_id,true)
+                (desc.common.op_id, true)
             }
-            // Userspace types use virtual address directly
-            ToCardCtrlRbDesc::UpdatePageTable(desc) => {
-                (desc.common.op_id,true)
-            }
-            ToCardCtrlRbDesc::SetNetworkParam(desc) => {
-                (desc.common.op_id,true)
-            }
+            ToCardCtrlRbDesc::SetNetworkParam(desc) => (desc.common.op_id, true),
             ToCardCtrlRbDesc::SetRawPacketReceiveMeta(desc) => {
-                (desc.common.op_id,true)
+                self.raw_pkt_config
+                    .set_base_addr(desc.base_write_addr as usize);
+                (desc.common.op_id, true)
             }
-            ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => {
-                (desc.common.op_id,true)
-            }
+            ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => (desc.common.op_id, true),
+            // Userspace types use virtual address directly
+            ToCardCtrlRbDesc::UpdatePageTable(desc) => (desc.common.op_id, true),
         };
-        let resp_desc = ToHostCtrlRbDesc{
-            common: ToHostCtrlRbDescCommon{
+        let resp_desc = ToHostCtrlRbDesc {
+            common: ToHostCtrlRbDescCommon {
                 op_id,
                 is_success: is_succ,
-                opcode
+                opcode,
             },
-        };  
+        };
         #[allow(clippy::unwrap_used)] // if the pipe in software is broken, we should panic.
         {
-            self.to_host_ctrl_descriptor_queue
-                .send(resp_desc)
-                .unwrap();
+            self.to_host_ctrl_descriptor_queue.send(resp_desc).unwrap();
         }
         Ok(())
     }
@@ -535,16 +565,26 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
             self.to_host_data_descriptor_queue.send(descriptor).unwrap();
         }
     }
+
+    fn recv_raw(&self, message: &[u8]) {
+        let write_addr = self.raw_pkt_config.get_write_addr();
+        // SAFETY: the software ensure is safe to copy raw packet to base address
+        unsafe {
+            std::ptr::copy_nonoverlapping(message.as_ptr(), write_addr as *mut u8, message.len());
+        }
+    }
 }
 
-fn to_host_ctrl_opcode(desc : &ToCardCtrlRbDesc) -> CtrlRbDescOpcode {
+fn to_host_ctrl_opcode(desc: &ToCardCtrlRbDesc) -> CtrlRbDescOpcode {
     match desc {
         ToCardCtrlRbDesc::UpdateMrTable(_) => CtrlRbDescOpcode::UpdateMrTable,
         ToCardCtrlRbDesc::UpdatePageTable(_) => CtrlRbDescOpcode::UpdatePageTable,
         ToCardCtrlRbDesc::QpManagement(_) => CtrlRbDescOpcode::QpManagement,
         ToCardCtrlRbDesc::SetNetworkParam(_) => CtrlRbDescOpcode::SetNetworkParam,
         ToCardCtrlRbDesc::SetRawPacketReceiveMeta(_) => CtrlRbDescOpcode::SetRawPacketReceiveMeta,
-        ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(_) => CtrlRbDescOpcode::UpdateErrorPsnRecoverPoint,
+        ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(_) => {
+            CtrlRbDescOpcode::UpdateErrorPsnRecoverPoint
+        }
     }
 }
 
