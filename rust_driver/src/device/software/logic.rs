@@ -73,8 +73,8 @@ impl RawPktConfig {
 
     fn get_write_addr(&self) -> usize {
         let base = self.raw_pkt_base_addr.load(Ordering::Acquire);
-        let idx = self.raw_pkt_base_addr.load(Ordering::Acquire);
-        self.raw_pkt_base_addr.store(idx + 1, Ordering::Release);
+        let idx = self.raw_pkt_buf_idx.load(Ordering::Acquire);
+        self.raw_pkt_buf_idx.store(idx + 1, Ordering::Release);
         base + (idx * RAW_PKT_BLOCK_SIZE)
     }
 
