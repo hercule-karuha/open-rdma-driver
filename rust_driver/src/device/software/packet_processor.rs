@@ -2,10 +2,7 @@ use std::{mem::size_of, net::Ipv4Addr};
 
 use thiserror::Error;
 
-use crate::device::{
-    layout::{IP_DEFAULT_TTL, IP_DEFAULT_VERSION_AND_LEN},
-    ToHostWorkRbDescOpcode,
-};
+use crate::device::ToHostWorkRbDescOpcode;
 
 use super::{
     packet::{
@@ -13,24 +10,22 @@ use super::{
         RdmaReadResponseFirstHeader, RdmaReadResponseLastHeader, RdmaReadResponseMiddleHeader,
         RdmaReadResponseOnlyHeader, RdmaWriteFirstHeader, RdmaWriteLastHeader,
         RdmaWriteLastWithImmediateHeader, RdmaWriteMiddleHeader, RdmaWriteOnlyHeader,
-        RdmaWriteOnlyWithImmediateHeader, BTH,
+        RdmaWriteOnlyWithImmediateHeader,
     },
     types::RdmaMessage,
 };
 
 use super::packet::{
     ICRC_SIZE, IPV4_DEFAULT_DSCP_AND_ECN, IPV4_DEFAULT_TTL, IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH,
-    IPV4_PROTOCOL_UDP,
+    IPV4_HEADER_SIZE, IPV4_PROTOCOL_UDP, IPV4_UDP_BTH_HEADER_SIZE, UDP_HEADER_SIZE,
 };
-use crate::device::layout::{
-    Bth, Ipv4, Udp, BTH_HEADER_SIZE, IPV4_HEADER_SIZE, IPV4_UDP_BTH_HEADER_SIZE, UDP_HEADER_SIZE,
-};
+use crate::device::layout::{Bth, Ipv4, Udp};
 
 pub(crate) struct PacketProcessor;
 
 impl PacketProcessor {
     pub(crate) fn to_rdma_message(buf: &[u8]) -> Result<RdmaMessage, PacketError> {
-        let opcode = ToHostWorkRbDescOpcode::try_from(BTH::from_bytes(buf).get_opcode());
+        let opcode = ToHostWorkRbDescOpcode::try_from(Bth(buf).get_opcode() as u8);
         match opcode {
             Ok(ToHostWorkRbDescOpcode::RdmaWriteFirst) => {
                 let header = RdmaWriteFirstHeader::from_bytes(buf);
@@ -334,9 +329,9 @@ pub(crate) fn write_ip_udp_header(
 ) {
     let mut ip_header = Ipv4(buf);
 
-    ip_header.set_version_and_len(IP_DEFAULT_VERSION_AND_LEN.into());
+    ip_header.set_version_and_len(IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH.into());
     ip_header.set_dscp_ecn(IPV4_DEFAULT_DSCP_AND_ECN.into());
-    ip_header.set_ttl(IP_DEFAULT_TTL.into());
+    ip_header.set_ttl(IPV4_DEFAULT_TTL.into());
     ip_header.set_protocol(IPV4_PROTOCOL_UDP.into());
 
     let src_addr: u32 = src_addr.into();

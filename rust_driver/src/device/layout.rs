@@ -4,21 +4,6 @@ use std::{mem::size_of, ptr};
 // Using the `#!` to suppress the warning of `clippy::indexing_slicing` in the generated code.
 use bitfield::{bitfield, BitRange, BitRangeMut};
 
-pub(crate) const MAC_HEADER_SIZE: usize = 14;
-pub(crate) const IPV4_HEADER_SIZE: usize = 20;
-pub(crate) const UDP_HEADER_SIZE: usize = 8;
-pub(crate) const RDMA_PKT_OFFSET: usize = MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE;
-pub(crate) const BTH_HEADER_SIZE: usize = 12;
-pub(crate) const IPV4_UDP_BTH_HEADER_SIZE: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE;
-pub(crate) const AETH_HEADER_SIZE: usize = 4;
-pub(crate) const NRETH_HEADER_SIZE: usize = 4;
-
-pub(crate) const MAC_SERVICE_LAYER_IPV4: u16 = 8;
-pub(crate) const IP_DEFAULT_VERSION_AND_LEN: u8 = 0x45;
-pub(crate) const IP_DEFAULT_TTL: u8 = 64;
-pub(crate) const IP_DEFAULT_PROTOCOL: u8 = 17;
-pub(crate) const RDMA_DEFAULT_PORT: u16 = 4791;
-
 
 bitfield! {
     pub struct CmdQueueDescCommonHead([u8]);

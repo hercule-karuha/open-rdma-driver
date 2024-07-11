@@ -13,14 +13,12 @@ use log::{error, info};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::device::software::{
-    packet::{check_rdma_pkt, ICRC_SIZE},
+    packet::{check_rdma_pkt, ICRC_SIZE,MAC_HEADER_SIZE,RDMA_PKT_OFFSET},
     packet_processor::{is_icrc_valid, PacketProcessor, PacketWriter},
     types::{PayloadInfo, RdmaMessage},
 };
 
 use super::{NetAgentError, NetReceiveLogic, NetSendAgent};
-
-use crate::device::layout::{MAC_HEADER_SIZE, RDMA_PKT_OFFSET};
 
 pub(crate) const NET_SERVER_BUF_SIZE: usize = 8192;
 
