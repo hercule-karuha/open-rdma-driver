@@ -1,4 +1,4 @@
-use std::{mem::size_of, net::Ipv4Addr};
+use std::net::Ipv4Addr;
 
 use thiserror::Error;
 
@@ -17,9 +17,10 @@ use super::{
 
 use super::packet::{
     ICRC_SIZE, IPV4_DEFAULT_DSCP_AND_ECN, IPV4_DEFAULT_TTL, IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH,
-    IPV4_HEADER_SIZE, IPV4_PROTOCOL_UDP, IPV4_UDP_BTH_HEADER_SIZE, UDP_HEADER_SIZE,
+    IPV4_HEADER_SIZE, IPV4_PROTOCOL_UDP, IPV4_UDP_BTH_HEADER_SIZE, MAC_HEADER_SIZE,
+    MAC_SERVICE_LAYER_IPV4, RDMA_DEFAULT_PORT, UDP_HEADER_SIZE,
 };
-use crate::device::layout::{Bth, Ipv4, Udp};
+use crate::device::layout::{Bth, Ipv4, Mac, Udp};
 
 pub(crate) struct PacketProcessor;
 
@@ -349,7 +350,7 @@ pub(crate) fn write_ip_udp_header(
     udp_header.set_dst_port(dest_port.to_be());
 
     #[allow(clippy::cast_possible_truncation)]
-    udp_header.set_length(total_length.wrapping_sub(IPV4_HEADER_SIZE as u16).into());
+    udp_header.set_length(total_length.wrapping_sub(IPV4_HEADER_SIZE as u16).to_be());
 
     udp_header.set_checksum(0);
 }
@@ -374,6 +375,35 @@ pub(crate) fn is_icrc_valid(received_data: &mut [u8]) -> Result<bool, PacketProc
     received_data[length.wrapping_sub(ICRC_SIZE)..length].copy_from_slice(&[0u8; 4]);
     let our_icrc = compute_icrc(received_data);
     Ok(our_icrc == origin_icrc)
+}
+
+pub(crate) fn check_rdma_pkt(received_data: &[u8]) -> bool {
+    let mac_header = Mac(received_data);
+    if mac_header.get_network_layer_type() != MAC_SERVICE_LAYER_IPV4 as u64 {
+        return false;
+    }
+
+    let data_without_mac = &received_data[MAC_HEADER_SIZE..];
+    if data_without_mac.len() < IPV4_HEADER_SIZE {
+        return false;
+    }
+
+    let ipv4_header = Ipv4(data_without_mac);
+    if ipv4_header.get_protocol() != IPV4_PROTOCOL_UDP as u32 {
+        return false;
+    }
+
+    let data_without_macip = &received_data[IPV4_HEADER_SIZE..];
+    if data_without_macip.len() < UDP_HEADER_SIZE {
+        return false;
+    }
+
+    let udp_header = Udp(data_without_macip);
+    if udp_header.get_dst_port() != RDMA_DEFAULT_PORT {
+        return false;
+    }
+
+    true
 }
 
 #[cfg(test)]

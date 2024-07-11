@@ -19,8 +19,6 @@ use super::types::{
     RethHeader,
 };
 
-use crate::device::layout::{Ipv4, Mac, Udp};
-
 pub(crate) const IPV4_HEADER_SIZE: usize = 20;
 pub(crate) const MAC_HEADER_SIZE: usize = 14;
 pub(crate) const UDP_HEADER_SIZE: usize = 8;
@@ -30,7 +28,6 @@ pub(crate) const IPV4_UDP_BTH_HEADER_SIZE: usize =
     IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE;
 
 pub(crate) const MAC_SERVICE_LAYER_IPV4: u16 = 8;
-pub(crate) const IP_DEFAULT_PROTOCOL: u8 = 17;
 pub(crate) const IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH: u8 = 0x45;
 pub(crate) const IPV4_DEFAULT_DSCP_AND_ECN: u8 = 0;
 pub(crate) const IPV4_PROTOCOL_UDP: u8 = 0x11;
@@ -472,35 +469,6 @@ pub(crate) type RdmaReadResponseMiddleHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaReadResponseLastHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaReadResponseOnlyHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaAcknowledgeHeader = RdmaHeaderRespBthAeth;
-
-pub(crate) fn check_rdma_pkt(received_data: &[u8]) -> bool {
-    let mac_header = Mac(received_data);
-    if mac_header.get_network_layer_type() != MAC_SERVICE_LAYER_IPV4 as u64 {
-        return false;
-    }
-
-    let data_without_mac = &received_data[MAC_HEADER_SIZE..];
-    if data_without_mac.len() < IPV4_HEADER_SIZE {
-        return false;
-    }
-
-    let ipv4_header = Ipv4(data_without_mac);
-    if ipv4_header.get_protocol() != IP_DEFAULT_PROTOCOL as u32 {
-        return false;
-    }
-
-    let data_without_macip = &received_data[IPV4_HEADER_SIZE..];
-    if data_without_macip.len() < UDP_HEADER_SIZE {
-        return false;
-    }
-
-    let udp_header = Udp(data_without_macip);
-    if udp_header.get_dst_port() != RDMA_DEFAULT_PORT {
-        return false;
-    }
-
-    true
-}
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Error, Debug)]

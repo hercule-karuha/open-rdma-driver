@@ -1,5 +1,5 @@
 use std::{
-    mem::{size_of, MaybeUninit},
+    mem::MaybeUninit,
     net::{Ipv4Addr, SocketAddrV4},
     os::fd::AsRawFd,
     sync::{
@@ -13,8 +13,8 @@ use log::{error, info};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::device::software::{
-    packet::{check_rdma_pkt, ICRC_SIZE,MAC_HEADER_SIZE,RDMA_PKT_OFFSET},
-    packet_processor::{is_icrc_valid, PacketProcessor, PacketWriter},
+    packet::{ICRC_SIZE, MAC_HEADER_SIZE, RDMA_PKT_OFFSET},
+    packet_processor::{check_rdma_pkt, is_icrc_valid, PacketProcessor, PacketWriter},
     types::{PayloadInfo, RdmaMessage},
 };
 
@@ -219,6 +219,6 @@ mod tests {
             let new_msg = msg.clone();
             self.packets.lock().unwrap().push(new_msg);
         }
-        fn recv_raw(&self, message: &[u8]) {}
+        fn recv_raw(&self, _message: &[u8]) {}
     }
 }
