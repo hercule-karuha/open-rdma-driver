@@ -13,7 +13,7 @@ use log::{error, info};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::device::software::{
-    packet::{check_rdma_pkt, CommonPacketHeader, IpUdpHeaders, ICRC_SIZE},
+    packet::{check_rdma_pkt, ICRC_SIZE},
     packet_processor::{is_icrc_valid, PacketProcessor, PacketWriter},
     types::{PayloadInfo, RdmaMessage},
 };

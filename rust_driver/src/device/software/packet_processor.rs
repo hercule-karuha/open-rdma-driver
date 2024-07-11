@@ -2,18 +2,28 @@ use std::{mem::size_of, net::Ipv4Addr};
 
 use thiserror::Error;
 
-use crate::device::ToHostWorkRbDescOpcode;
+use crate::device::{
+    layout::{IP_DEFAULT_TTL, IP_DEFAULT_VERSION_AND_LEN},
+    ToHostWorkRbDescOpcode,
+};
 
 use super::{
     packet::{
-        CommonPacketHeader, IpUdpHeaders, Ipv4Header, PacketError, RdmaAcknowledgeHeader,
-        RdmaPacketHeader, RdmaReadRequestHeader, RdmaReadResponseFirstHeader,
-        RdmaReadResponseLastHeader, RdmaReadResponseMiddleHeader, RdmaReadResponseOnlyHeader,
-        RdmaWriteFirstHeader, RdmaWriteLastHeader, RdmaWriteLastWithImmediateHeader,
-        RdmaWriteMiddleHeader, RdmaWriteOnlyHeader, RdmaWriteOnlyWithImmediateHeader, BTH,
-        ICRC_SIZE,
+        PacketError, RdmaAcknowledgeHeader, RdmaPacketHeader, RdmaReadRequestHeader,
+        RdmaReadResponseFirstHeader, RdmaReadResponseLastHeader, RdmaReadResponseMiddleHeader,
+        RdmaReadResponseOnlyHeader, RdmaWriteFirstHeader, RdmaWriteLastHeader,
+        RdmaWriteLastWithImmediateHeader, RdmaWriteMiddleHeader, RdmaWriteOnlyHeader,
+        RdmaWriteOnlyWithImmediateHeader, BTH,
     },
     types::RdmaMessage,
+};
+
+use super::packet::{
+    ICRC_SIZE, IPV4_DEFAULT_DSCP_AND_ECN, IPV4_DEFAULT_TTL, IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH,
+    IPV4_PROTOCOL_UDP,
+};
+use crate::device::layout::{
+    Bth, Ipv4, Udp, BTH_HEADER_SIZE, IPV4_HEADER_SIZE, IPV4_UDP_BTH_HEADER_SIZE, UDP_HEADER_SIZE,
 };
 
 pub(crate) struct PacketProcessor;
@@ -216,30 +226,30 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
 
     pub(crate) fn write(&mut self) -> Result<usize, PacketProcessorError> {
         // advance `size_of::<IpUdpHeaders>()` to write the rdma header
-        let net_packet_offset = size_of::<IpUdpHeaders>();
+        let net_header_size = IPV4_HEADER_SIZE + UDP_HEADER_SIZE;
         let message = self.message.ok_or(PacketProcessorError::MissingMessage)?;
         // write the rdma header
-        let rdma_header_buf = self.buf.get_mut(net_packet_offset..).ok_or(
-            PacketProcessorError::BufferNotLargeEnough(net_packet_offset),
-        )?;
+        let rdma_header_buf = self
+            .buf
+            .get_mut(net_header_size..)
+            .ok_or(PacketProcessorError::BufferNotLargeEnough(net_header_size))?;
         let rdma_header_length = PacketProcessor::set_from_rdma_message(rdma_header_buf, message)?;
 
         // get the total length(include the ip,udp header and the icrc)
-        let total_length = size_of::<IpUdpHeaders>()
-            .wrapping_add(rdma_header_length)
-            .wrapping_add(message.payload.with_pad_length())
-            .wrapping_add(ICRC_SIZE);
+        let total_length = net_header_size
+            + rdma_header_length
+            + rdma_header_length
+            + message.payload.with_pad_length()
+            + ICRC_SIZE;
         let total_length_in_u16 = u16::try_from(total_length)
             .map_err(|_| PacketProcessorError::LengthTooLong(total_length))?;
 
         // write the payload
-        let header_offset = size_of::<IpUdpHeaders>().wrapping_add(rdma_header_length);
-        let header_buf =
-            self.buf
-                .get_mut(header_offset..)
-                .ok_or(PacketProcessorError::BufferNotLargeEnough(
-                    net_packet_offset,
-                ))?;
+        let header_offset = net_header_size + rdma_header_length;
+        let header_buf = self
+            .buf
+            .get_mut(header_offset..)
+            .ok_or(PacketProcessorError::BufferNotLargeEnough(net_header_size))?;
         message.payload.copy_to(header_buf.as_mut_ptr());
 
         // write the ip,udp header
@@ -287,28 +297,25 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
 pub(crate) fn compute_icrc(data: &[u8]) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
     let prefix = [0xffu8; 8];
+    let mut buf = [0; IPV4_UDP_BTH_HEADER_SIZE];
     hasher.update(&prefix);
 
-    let mut common_hdr = *CommonPacketHeader::from_bytes(data);
+    buf.copy_from_slice(data[..IPV4_UDP_BTH_HEADER_SIZE].as_ref());
+    let mut ip_header = Ipv4(&mut buf);
+    ip_header.set_dscp_ecn(0xff);
+    ip_header.set_ttl(0xff);
+    ip_header.set_checksum(0xffff);
 
-    common_hdr.net_header.ip_header.dscp_ecn = 0xff;
-    common_hdr.net_header.ip_header.ttl = 0xff;
-    common_hdr.net_header.ip_header.set_checksum(0xffff);
-    common_hdr.net_header.udp_header.set_checksum(0xffff);
-    common_hdr.bth_header.fill_ecn_and_resv6();
+    let mut udp_header = Udp(&mut buf[IPV4_HEADER_SIZE..]);
+    udp_header.set_checksum(0xffff);
 
-    // convert common_hdr to bytes
-    // SAFETY: the length is ensured
-    let common_hdr_bytes = unsafe {
-        std::slice::from_raw_parts(
-            std::ptr::addr_of!(common_hdr).cast::<u8>(),
-            size_of::<CommonPacketHeader>(),
-        )
-    };
-    hasher.update(common_hdr_bytes);
+    let mut bth_header = Bth(&mut buf[IPV4_HEADER_SIZE + UDP_HEADER_SIZE..]);
+    bth_header.set_ecn_and_resv6(0xff);
+
+    hasher.update(&buf);
     // the rest of header and payload
-    hasher.update(&data[size_of::<CommonPacketHeader>()..data.len().wrapping_sub(ICRC_SIZE)]);
-
+    #[allow(clippy::arithmetic_side_effects)]
+    hasher.update(&data[IPV4_UDP_BTH_HEADER_SIZE..data.len() - ICRC_SIZE]);
     hasher.finalize()
 }
 
@@ -325,22 +332,31 @@ pub(crate) fn write_ip_udp_header(
     total_length: u16,
     ip_identification: u16,
 ) {
-    let common_hdr = IpUdpHeaders::from_bytes(buf);
-    common_hdr.ip_header.set_default_header();
-    common_hdr.ip_header.set_source(src_addr);
-    common_hdr.ip_header.set_destination(dest_addr);
-    common_hdr.ip_header.set_total_length(total_length);
-    common_hdr.ip_header.set_flags_fragment_offset(0);
-    common_hdr.ip_header.set_identification(ip_identification);
-    common_hdr.ip_header.set_checksum(0);
+    let mut ip_header = Ipv4(buf);
 
-    common_hdr.udp_header.set_source_port(src_port);
-    common_hdr.udp_header.set_dest_port(dest_port);
+    ip_header.set_version_and_len(IP_DEFAULT_VERSION_AND_LEN.into());
+    ip_header.set_dscp_ecn(IPV4_DEFAULT_DSCP_AND_ECN.into());
+    ip_header.set_ttl(IP_DEFAULT_TTL.into());
+    ip_header.set_protocol(IPV4_PROTOCOL_UDP.into());
+
+    let src_addr: u32 = src_addr.into();
+    ip_header.set_source(src_addr.to_be());
+    let dst_addr: u32 = dest_addr.into();
+    ip_header.set_destination(dst_addr.to_be());
+
+    ip_header.set_total_length(total_length.into());
+    ip_header.set_fragment_offset(0);
+    ip_header.set_identification(ip_identification.into());
+    ip_header.set_checksum(0);
+
+    let mut udp_header = Udp(&mut ip_header.0[IPV4_HEADER_SIZE..]);
+    udp_header.set_src_port(src_port.to_be());
+    udp_header.set_dst_port(dest_port.to_be());
+
     #[allow(clippy::cast_possible_truncation)]
-    common_hdr
-        .udp_header
-        .set_length(total_length.wrapping_sub(size_of::<Ipv4Header>() as u16));
-    common_hdr.udp_header.set_checksum(0);
+    udp_header.set_length(total_length.wrapping_sub(IPV4_HEADER_SIZE as u16).into());
+
+    udp_header.set_checksum(0);
 }
 
 /// Assume the buffer is a packet, check if the icrc is valid
@@ -353,7 +369,8 @@ pub(crate) fn write_ip_udp_header(
 pub(crate) fn is_icrc_valid(received_data: &mut [u8]) -> Result<bool, PacketProcessorError> {
     let length = received_data.len();
     // chcek the icrc
-    let icrc_array: [u8; 4] = match received_data[length.wrapping_sub(ICRC_SIZE)..length].try_into() {
+    let icrc_array: [u8; 4] = match received_data[length.wrapping_sub(ICRC_SIZE)..length].try_into()
+    {
         Ok(arr) => arr,
         #[allow(clippy::cast_possible_truncation)]
         Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE)),
