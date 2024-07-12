@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    hardware_compoments::*,
+    hardware_simulate::*,
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
     types::{
         Key, Metadata, PDHandle, PKey, PayloadInfo, Qpn, RdmaGeneralMeta, RdmaMessage,
@@ -24,9 +24,10 @@ use super::{
 };
 use std::{
     collections::HashMap,
-    sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, PoisonError, RwLock},
 };
+
+const MAX_QP: usize = 8;
 
 /// The simulating hardware logic of `BlueRDMA`
 ///
@@ -38,6 +39,7 @@ pub(crate) struct BlueRDMALogic {
     mr_rkey_table: RwLock<HashMap<Key, Arc<RwLock<MemoryRegion>>>>,
     qp_table: RwLock<HashMap<Qpn, Arc<QueuePair>>>,
     raw_pkt_config: RawPktConfig,
+    expected_psn_manager: Arc<RwLock<ExpectedPsnManager>>,
     net_send_agent: Arc<dyn NetSendAgent>,
     to_host_data_descriptor_queue: Sender<ToHostWorkRbDesc>,
     to_host_ctrl_descriptor_queue: Sender<ToHostCtrlRbDesc>,
@@ -71,6 +73,7 @@ impl BlueRDMALogic {
             mr_rkey_table: RwLock::new(HashMap::new()),
             qp_table: RwLock::new(HashMap::new()),
             raw_pkt_config: RawPktConfig::new(),
+            expected_psn_manager: Arc::new(RwLock::new(ExpectedPsnManager::new(MAX_QP))),
             net_send_agent: net_sender,
             to_host_data_descriptor_queue: work_sender,
             to_host_ctrl_descriptor_queue: ctrl_sender,
@@ -298,6 +301,9 @@ impl BlueRDMALogic {
                         false
                     }
                 };
+                let mut locked_manager = self.expected_psn_manager.write()?;
+                let qpn_idx = desc.qpn.get() as usize;
+                locked_manager.reset_psn(qpn_idx);
                 (desc.common.op_id, is_success)
             }
             ToCardCtrlRbDesc::UpdateMrTable(desc) => {
@@ -327,7 +333,12 @@ impl BlueRDMALogic {
                     .set_base_addr(desc.base_write_addr as usize);
                 (desc.common.op_id, true)
             }
-            ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => (desc.common.op_id, true),
+            ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => {
+                let mut locked_manager = self.expected_psn_manager.write()?;
+                let qpn_idx = desc.qpn.get() as usize;
+                locked_manager.recovery_qp(qpn_idx, desc.recover_psn);
+                (desc.common.op_id, true)
+            }
             // Userspace types use virtual address directly
             ToCardCtrlRbDesc::UpdatePageTable(desc) => (desc.common.op_id, true),
         };

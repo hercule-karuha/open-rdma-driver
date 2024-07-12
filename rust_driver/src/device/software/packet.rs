@@ -50,6 +50,14 @@ const AETH_CODE_SHIFT: usize = 5;
 const AETH_VALUE_MASK: u8 = 0x1F;
 const AETH_MSN_MASK: u32 = 0x00FF_FFFF;
 
+const BTH_TVER_MASK: u8 = 0b0000_1111;
+const BTH_FECN_MASK: u8 = 0b1000_0000;
+const BTH_FECN_SHIFT: u8 = 7;
+const BTH_BECN_MASK: u8 = 0b0100_000;
+const BTH_BECN_SHIFT: u8 = 6;
+const BTH_RESV6_MASK: u8 = 0b0011_1111;
+const BTH_RESV7_MASK: u8 = 0b0111_1111;
+
 /// Base Transport Header of RDMA over Ethernet
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -157,6 +165,11 @@ impl BTH {
         self.psn[0] = ack_req;
     }
 
+    /// used for icrc check
+    pub(crate) fn fill_ecn_and_resv6(&mut self) {
+        self.destination_qpn[0] = 0xff;
+    }
+
     /// convert the &`RdmaMessageMetaCommon` to `BTH`
     pub(crate) fn set_from_common_meta(
         &mut self,
@@ -170,6 +183,26 @@ impl BTH {
         self.set_ack_req(common_meta.ack_req);
         self.set_psn(common_meta.psn.get());
         self.set_pkey(common_meta.pkey.get());
+    }
+
+    pub(crate) fn get_tver(&self) -> u8 {
+        self.flags & BTH_TVER_MASK
+    }
+
+    pub(crate) fn get_fecn(&self) -> u8 {
+        self.destination_qpn[0] & BTH_FECN_MASK >> BTH_FECN_SHIFT
+    }
+
+    pub(crate) fn get_becn(&self) -> u8 {
+        self.destination_qpn[0] & BTH_BECN_MASK >> BTH_BECN_SHIFT
+    }
+
+    pub(crate) fn get_resv6(&self) -> u8 {
+        self.destination_qpn[0] & BTH_RESV6_MASK
+    }
+
+    pub(crate) fn get_resv7(&self) -> u8 {
+        self.psn[0] & BTH_RESV7_MASK
     }
 }
 

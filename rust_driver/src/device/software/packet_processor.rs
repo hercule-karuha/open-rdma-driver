@@ -1,6 +1,4 @@
 use std::net::Ipv4Addr;
-
-use log::debug;
 use thiserror::Error;
 
 use crate::device::ToHostWorkRbDescOpcode;
@@ -11,7 +9,7 @@ use super::{
         RdmaReadResponseFirstHeader, RdmaReadResponseLastHeader, RdmaReadResponseMiddleHeader,
         RdmaReadResponseOnlyHeader, RdmaWriteFirstHeader, RdmaWriteLastHeader,
         RdmaWriteLastWithImmediateHeader, RdmaWriteMiddleHeader, RdmaWriteOnlyHeader,
-        RdmaWriteOnlyWithImmediateHeader,
+        RdmaWriteOnlyWithImmediateHeader, BTH,
     },
     types::RdmaMessage,
 };
@@ -21,13 +19,13 @@ use super::packet::{
     IPV4_HEADER_SIZE, IPV4_PROTOCOL_UDP, IPV4_UDP_BTH_HEADER_SIZE, MAC_HEADER_SIZE,
     MAC_SERVICE_LAYER_IPV4, RDMA_DEFAULT_PORT, UDP_HEADER_SIZE,
 };
-use crate::device::layout::{Bth, Ipv4, Mac, Udp};
+use crate::device::layout::{Ipv4, Mac, Udp};
 
 pub(crate) struct PacketProcessor;
 
 impl PacketProcessor {
     pub(crate) fn to_rdma_message(buf: &[u8]) -> Result<RdmaMessage, PacketError> {
-        let opcode = ToHostWorkRbDescOpcode::try_from(Bth(buf).get_opcode() as u8);
+        let opcode = ToHostWorkRbDescOpcode::try_from(BTH::from_bytes(buf).get_opcode());
         match opcode {
             Ok(ToHostWorkRbDescOpcode::RdmaWriteFirst) => {
                 let header = RdmaWriteFirstHeader::from_bytes(buf);
@@ -306,8 +304,8 @@ pub(crate) fn compute_icrc(data: &[u8]) -> u32 {
     let mut udp_header = Udp(&mut buf[IPV4_HEADER_SIZE..]);
     udp_header.set_checksum(0xffff);
 
-    let mut bth_header = Bth(&mut buf[IPV4_HEADER_SIZE + UDP_HEADER_SIZE..]);
-    bth_header.set_ecn_and_resv6(0xff);
+    let bth_header = BTH::from_bytes(&mut buf[IPV4_HEADER_SIZE + UDP_HEADER_SIZE..]);
+    bth_header.fill_ecn_and_resv6();
 
     hasher.update(&buf);
     // the rest of header and payload
