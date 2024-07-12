@@ -23,6 +23,7 @@ mod logic;
 mod net_agent;
 mod packet;
 mod packet_processor;
+mod hardware_compoments;
 #[cfg(test)]
 pub(crate) mod tests;
 mod types;

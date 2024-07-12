@@ -1,5 +1,6 @@
 use std::net::Ipv4Addr;
 
+use log::debug;
 use thiserror::Error;
 
 use crate::device::ToHostWorkRbDescOpcode;
@@ -393,7 +394,7 @@ pub(crate) fn check_rdma_pkt(received_data: &[u8]) -> bool {
         return false;
     }
 
-    let data_without_macip = &received_data[IPV4_HEADER_SIZE..];
+    let data_without_macip = &received_data[MAC_HEADER_SIZE + IPV4_HEADER_SIZE..];
     if data_without_macip.len() < UDP_HEADER_SIZE {
         return false;
     }
@@ -408,7 +409,12 @@ pub(crate) fn check_rdma_pkt(received_data: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::device::software::packet_processor::compute_icrc;
+    use crate::device::layout::{Ipv4, Mac, Udp};
+    use crate::device::software::packet::{
+        IPV4_HEADER_SIZE, IPV4_PROTOCOL_UDP, MAC_HEADER_SIZE, MAC_SERVICE_LAYER_IPV4,
+        RDMA_DEFAULT_PORT, UDP_HEADER_SIZE,
+    };
+    use crate::device::software::packet_processor::{check_rdma_pkt, compute_icrc};
 
     #[test]
     fn test_computing_icrc() {
@@ -448,5 +454,35 @@ mod tests {
         ];
         let icrc = compute_icrc(&buf);
         assert_eq!(icrc, u32::from_le_bytes([64, 33, 163, 207]));
+    }
+
+    #[test]
+    fn test_check_rdma_pkt() {
+        // Test case 1: Valid RDMA packet
+        let mut packet1: [u8; 100] = [0; 100];
+
+        let mut mac_header = Mac(&mut packet1);
+        mac_header.set_network_layer_type(MAC_SERVICE_LAYER_IPV4.into());
+
+        let mut ipv4_header = Ipv4(&mut packet1[MAC_HEADER_SIZE..]);
+        ipv4_header.set_protocol(IPV4_PROTOCOL_UDP.into());
+
+        let mut udp_header = Udp(&mut packet1[MAC_HEADER_SIZE + IPV4_HEADER_SIZE..]);
+        udp_header.set_dst_port(RDMA_DEFAULT_PORT);
+
+        assert_eq!(check_rdma_pkt(&packet1), true);
+
+        // Test case 2: small size
+        let mut packet2: [u8; MAC_HEADER_SIZE] = [0; MAC_HEADER_SIZE];
+        let mut mac_header = Mac(&mut packet2);
+        mac_header.set_network_layer_type(MAC_SERVICE_LAYER_IPV4.into());
+        assert_eq!(check_rdma_pkt(&packet2), false);
+
+        // Test case 3: small size
+        let mut packet3: [u8; MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE] =
+            [0; MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE];
+        let mut mac_header = Mac(&mut packet3);
+        mac_header.set_network_layer_type(0xff);
+        assert_eq!(check_rdma_pkt(&packet2), false);
     }
 }

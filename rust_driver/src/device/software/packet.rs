@@ -2,10 +2,7 @@
 Base and extended transport header
 */
 
-use std::{
-    mem::{size_of, transmute},
-    net::Ipv4Addr,
-};
+use std::mem::{size_of, transmute};
 
 use thiserror::Error;
 
@@ -158,11 +155,6 @@ impl BTH {
         let ack_req = self.psn[0];
         self.psn = (psn & BTH_PSN_MASK).to_be_bytes();
         self.psn[0] = ack_req;
-    }
-
-    /// used for icrc check
-    pub(crate) fn fill_ecn_and_resv6(&mut self) {
-        self.destination_qpn[0] = 0xff;
     }
 
     /// convert the &`RdmaMessageMetaCommon` to `BTH`

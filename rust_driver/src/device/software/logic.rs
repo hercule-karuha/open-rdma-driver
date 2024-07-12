@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::{
+    hardware_compoments::*,
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
     types::{
         Key, Metadata, PDHandle, PKey, PayloadInfo, Qpn, RdmaGeneralMeta, RdmaMessage,
@@ -26,62 +27,6 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, PoisonError, RwLock},
 };
-
-const RAW_PKT_BLOCK_SIZE: usize = 4096;
-
-#[derive(Debug, Clone)]
-struct QueuePairInner {
-    pmtu: Pmtu,
-    qp_type: QpType,
-    qp_access_flags: MemAccessTypeFlag,
-    pdkey: PDHandle,
-}
-
-/// The hardware queue pair context
-#[derive(Debug)]
-struct QueuePair {
-    #[allow(dead_code)]
-    inner: QueuePairInner,
-}
-
-/// The hardware memory region context
-#[allow(dead_code)]
-#[derive(Debug)]
-struct MemoryRegion {
-    key: Key,
-    acc_flags: MemAccessTypeFlag,
-    pdkey: PDHandle,
-    addr: u64,
-    len: usize,
-    pgt_offset: u32,
-}
-
-/// Store the config information for raw packets
-#[derive(Debug)]
-struct RawPktConfig {
-    raw_pkt_base_addr: AtomicUsize,
-    raw_pkt_buf_idx: AtomicUsize,
-}
-
-impl RawPktConfig {
-    fn new() -> Self {
-        RawPktConfig {
-            raw_pkt_base_addr: AtomicUsize::new(0),
-            raw_pkt_buf_idx: AtomicUsize::new(0),
-        }
-    }
-
-    fn get_write_addr(&self) -> usize {
-        let base = self.raw_pkt_base_addr.load(Ordering::Acquire);
-        let idx = self.raw_pkt_buf_idx.load(Ordering::Acquire);
-        self.raw_pkt_buf_idx.store(idx + 1, Ordering::Release);
-        base + (idx * RAW_PKT_BLOCK_SIZE)
-    }
-
-    fn set_base_addr(&self, base: usize) {
-        self.raw_pkt_base_addr.store(base, Ordering::Release);
-    }
-}
 
 /// The simulating hardware logic of `BlueRDMA`
 ///
