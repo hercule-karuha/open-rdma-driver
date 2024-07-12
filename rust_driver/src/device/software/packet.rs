@@ -2,10 +2,7 @@
 Base and extended transport header
 */
 
-use std::{
-    mem::{size_of, transmute},
-    net::Ipv4Addr,
-};
+use std::mem::{size_of, transmute};
 
 use thiserror::Error;
 
@@ -19,12 +16,24 @@ use super::types::{
     RethHeader,
 };
 
-pub(crate) const ICRC_SIZE: usize = 4;
+pub(crate) const IPV4_HEADER_SIZE: usize = 20;
+pub(crate) const MAC_HEADER_SIZE: usize = 14;
+pub(crate) const UDP_HEADER_SIZE: usize = 8;
+pub(crate) const BTH_HEADER_SIZE: usize = 12;
+pub(crate) const RDMA_PKT_OFFSET: usize = MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE;
+pub(crate) const IPV4_UDP_BTH_HEADER_SIZE: usize =
+    IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE;
+
+pub(crate) const MAC_SERVICE_LAYER_IPV4: u16 = 8;
 pub(crate) const IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH: u8 = 0x45;
 pub(crate) const IPV4_DEFAULT_DSCP_AND_ECN: u8 = 0;
 pub(crate) const IPV4_PROTOCOL_UDP: u8 = 0x11;
 pub(crate) const IPV4_DEFAULT_TTL: u8 = 64;
 pub(crate) const RDMA_PAYLOAD_ALIGNMENT: usize = 4;
+
+pub(crate) const ICRC_SIZE: usize = 4;
+
+pub(crate) const RDMA_DEFAULT_PORT: u16 = 4791;
 
 const BTH_OPCODE_MASK: u8 = 0x1F;
 const BTH_TRANSACTION_TYPE_MASK: u8 = 0xE0;
@@ -40,6 +49,14 @@ const AETH_CODE_MASK: u8 = 0x60;
 const AETH_CODE_SHIFT: usize = 5;
 const AETH_VALUE_MASK: u8 = 0x1F;
 const AETH_MSN_MASK: u32 = 0x00FF_FFFF;
+
+const BTH_TVER_MASK: u8 = 0b0000_1111;
+const BTH_FECN_MASK: u8 = 0b1000_0000;
+const BTH_FECN_SHIFT: u8 = 7;
+const BTH_BECN_MASK: u8 = 0b0100_000;
+const BTH_BECN_SHIFT: u8 = 6;
+const BTH_RESV6_MASK: u8 = 0b0011_1111;
+const BTH_RESV7_MASK: u8 = 0b0111_1111;
 
 /// Base Transport Header of RDMA over Ethernet
 #[derive(Clone, Copy)]
@@ -76,7 +93,7 @@ impl BTH {
         (self.flags & BTH_FLAGS_PAD_CNT_MASK) >> BTH_FLAGS_PAD_CNT_SHIFT
     }
 
-    #[allow(clippy::arithmetic_side_effects)]// pad_cnt is derived from payload_length,and will always be less than payload_length
+    #[allow(clippy::arithmetic_side_effects)] // pad_cnt is derived from payload_length,and will always be less than payload_length
     pub(crate) fn get_packet_real_length(&self, payload_length: usize) -> usize {
         let pad_cnt: usize = self.get_pad_cnt().into();
         payload_length - pad_cnt
@@ -166,6 +183,26 @@ impl BTH {
         self.set_ack_req(common_meta.ack_req);
         self.set_psn(common_meta.psn.get());
         self.set_pkey(common_meta.pkey.get());
+    }
+
+    pub(crate) fn get_tver(&self) -> u8 {
+        self.flags & BTH_TVER_MASK
+    }
+
+    pub(crate) fn get_fecn(&self) -> u8 {
+        self.destination_qpn[0] & BTH_FECN_MASK >> BTH_FECN_SHIFT
+    }
+
+    pub(crate) fn get_becn(&self) -> u8 {
+        self.destination_qpn[0] & BTH_BECN_MASK >> BTH_BECN_SHIFT
+    }
+
+    pub(crate) fn get_resv6(&self) -> u8 {
+        self.destination_qpn[0] & BTH_RESV6_MASK
+    }
+
+    pub(crate) fn get_resv7(&self) -> u8 {
+        self.psn[0] & BTH_RESV7_MASK
     }
 }
 
@@ -457,110 +494,6 @@ pub(crate) type RdmaReadResponseMiddleHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaReadResponseLastHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaReadResponseOnlyHeader = RdmaHeaderReqBthReth;
 pub(crate) type RdmaAcknowledgeHeader = RdmaHeaderRespBthAeth;
-
-/// The IPv4 header
-#[derive(Clone, Copy)]
-#[repr(C, packed)]
-pub(crate) struct Ipv4Header {
-    pub(crate) version_header_len: u8, // version and header length
-    pub(crate) dscp_ecn: u8,           // dscp and ecn
-    total_length: [u8; 2],
-    identification: [u8; 2],
-    flags_fragment_offset: [u8; 2],
-    pub(crate) ttl: u8,
-    pub(crate) protocol: u8,
-    checksum: [u8; 2],
-    source: [u8; 4],
-    destination: [u8; 4],
-}
-
-impl Ipv4Header {
-    /// set default `version_header_len`,`dscp_ecn`,`ttl` and `protocol`.
-    pub(crate) fn set_default_header(&mut self) {
-        self.version_header_len = IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH;
-        self.dscp_ecn = IPV4_DEFAULT_DSCP_AND_ECN;
-        self.ttl = IPV4_DEFAULT_TTL;
-        self.protocol = IPV4_PROTOCOL_UDP;
-    }
-
-    pub(crate) fn set_total_length(&mut self, length: u16) {
-        self.total_length = length.to_be_bytes();
-    }
-    pub(crate) fn set_identification(&mut self, id: u16) {
-        self.identification = id.to_be_bytes();
-    }
-    pub(crate) fn set_flags_fragment_offset(&mut self, flags: u16) {
-        self.flags_fragment_offset = flags.to_be_bytes();
-    }
-    pub(crate) fn set_checksum(&mut self, checksum: u16) {
-        self.checksum = checksum.to_be_bytes();
-    }
-    pub(crate) fn set_source(&mut self, source: Ipv4Addr) {
-        self.source = source.octets();
-    }
-    pub(crate) fn set_destination(&mut self, destination: Ipv4Addr) {
-        self.destination = destination.octets();
-    }
-}
-
-/// The UDP Header
-#[derive(Clone, Copy)]
-#[repr(C, packed)]
-pub(crate) struct UdpHeader {
-    source_port: [u8; 2],
-    dest_port: [u8; 2],
-    length: [u8; 2],
-    checksum: [u8; 2],
-}
-
-impl UdpHeader {
-    pub(crate) fn set_source_port(&mut self, port: u16) {
-        self.source_port = port.to_be_bytes();
-    }
-
-    pub(crate) fn set_dest_port(&mut self, port: u16) {
-        self.dest_port = port.to_be_bytes();
-    }
-
-    pub(crate) fn set_length(&mut self, length: u16) {
-        self.length = length.to_be_bytes();
-    }
-
-    pub(crate) fn set_checksum(&mut self, checksum: u16) {
-        self.checksum = checksum.to_be_bytes();
-    }
-}
-
-/// A composite packet header layout that contains the Ipv4 header and the Udp header.
-#[derive(Clone, Copy)]
-#[repr(C, packed)]
-pub(crate) struct IpUdpHeaders {
-    pub(crate) ip_header: Ipv4Header,
-    pub(crate) udp_header: UdpHeader,
-}
-
-impl IpUdpHeaders {
-    #[allow(clippy::transmute_ptr_to_ref)]
-    pub(crate) fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        unsafe { transmute(bytes.as_ptr()) }
-    }
-}
-
-/// A composite packet layout that contains the Ipv4 header, the Udp header and the BTH.
-/// The packet may contains the RETH or the AETH, but for ICRC computation, we don't need to include them.
-#[derive(Clone, Copy)]
-#[repr(C, packed)]
-pub(crate) struct CommonPacketHeader {
-    pub(crate) net_header: IpUdpHeaders,
-    pub(crate) bth_header: BTH,
-}
-
-impl CommonPacketHeader {
-    #[allow(clippy::transmute_ptr_to_ref)]
-    pub(crate) fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        unsafe { transmute(bytes.as_ptr()) }
-    }
-}
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Error, Debug)]

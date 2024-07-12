@@ -4,6 +4,7 @@ use std::{mem::size_of, ptr};
 // Using the `#!` to suppress the warning of `clippy::indexing_slicing` in the generated code.
 use bitfield::{bitfield, BitRange, BitRangeMut};
 
+
 bitfield! {
     pub struct CmdQueueDescCommonHead([u8]);
     u32;

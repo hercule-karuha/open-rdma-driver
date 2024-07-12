@@ -13,6 +13,7 @@ pub(crate) mod udp_agent;
 
 pub(crate) trait NetReceiveLogic<'a>: Send + Sync + Debug {
     fn recv(&self, message: &mut RdmaMessage);
+    fn recv_raw(&self, message: &[u8]);
 }
 
 pub(crate) trait NetSendAgent: Debug {

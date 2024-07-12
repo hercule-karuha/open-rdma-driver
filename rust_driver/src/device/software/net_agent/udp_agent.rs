@@ -1,5 +1,5 @@
 use std::{
-    mem::{size_of, MaybeUninit},
+    mem::MaybeUninit,
     net::{Ipv4Addr, SocketAddrV4},
     os::fd::AsRawFd,
     sync::{
@@ -13,8 +13,8 @@ use log::{error, info};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::device::software::{
-    packet::{CommonPacketHeader, IpUdpHeaders, ICRC_SIZE},
-    packet_processor::{is_icrc_valid, PacketProcessor, PacketWriter},
+    packet::{ICRC_SIZE, MAC_HEADER_SIZE, RDMA_PKT_OFFSET},
+    packet_processor::{check_rdma_pkt, is_icrc_valid, PacketProcessor, PacketWriter},
     types::{PayloadInfo, RdmaMessage},
 };
 
@@ -94,7 +94,7 @@ impl UDPReceiveAgent {
             while !thread_stop_flag.load(Ordering::Relaxed) {
                 if let Ok((length, _src)) = socket.recv_from(&mut buf) {
                     #[allow(clippy::arithmetic_side_effects)]
-                    if length < size_of::<CommonPacketHeader>() + 4 {
+                    if length < MAC_HEADER_SIZE {
                         error!("Packet too short");
                         continue;
                     }
@@ -103,8 +103,12 @@ impl UDPReceiveAgent {
                         std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), length)
                     };
 
+                    if !check_rdma_pkt(received_data) {
+                        receiver.recv_raw(received_data);
+                    }
+
                     match is_icrc_valid(received_data) {
-                        Ok(is_valid) =>{
+                        Ok(is_valid) => {
                             if !is_valid {
                                 error!("ICRC check failed {:?}", received_data);
                                 continue;
@@ -115,12 +119,10 @@ impl UDPReceiveAgent {
                             continue;
                         }
                     }
-                    // skip the ip header and udp header and the icrc
-                    let offset = size_of::<IpUdpHeaders>();
 
                     #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
                     // if we pass the CRC check, it should be ok
-                    let received_data = &received_data[offset..length - ICRC_SIZE];
+                    let received_data = &received_data[RDMA_PKT_OFFSET..length - ICRC_SIZE];
                     if let Ok(mut message) = PacketProcessor::to_rdma_message(received_data) {
                         receiver.recv(&mut message);
                     }
@@ -217,5 +219,6 @@ mod tests {
             let new_msg = msg.clone();
             self.packets.lock().unwrap().push(new_msg);
         }
+        fn recv_raw(&self, _message: &[u8]) {}
     }
 }
