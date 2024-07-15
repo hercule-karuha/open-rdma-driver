@@ -213,7 +213,7 @@ mod tests {
     unsafe impl Send for DummyNetReceiveLogic {}
 
     impl NetReceiveLogic<'_> for DummyNetReceiveLogic {
-        fn recv(&self, message: &[u8]) {}
-        fn recv_raw(&self, _message: &[u8]) {}
+        fn recv(&self, _data: &[u8]) {}
+        fn recv_raw(&self, _data: &[u8]) {}
     }
 }

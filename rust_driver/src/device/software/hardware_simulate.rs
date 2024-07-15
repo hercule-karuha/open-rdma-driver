@@ -1,6 +1,6 @@
 use super::packet::BTH;
 use super::types::{Key, PDHandle, RdmaOpCode};
-use crate::types::{MemAccessTypeFlag, Pmtu, Psn, QpType};
+use crate::types::{MemAccessTypeFlag, Pmtu, Psn, QpType, Qpn};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
     usize,
@@ -20,6 +20,7 @@ pub(super) struct QueuePairInner {
     pub(super) pmtu: Pmtu,
     pub(super) qp_type: QpType,
     pub(super) qp_access_flags: MemAccessTypeFlag,
+    pub(super) peer_qp: Qpn,
     pub(super) pdkey: PDHandle,
 }
 
@@ -173,7 +174,7 @@ impl ExpectedPsnContextEntry {
 }
 
 // /// do bth zero field check and pad count check
-pub (super) fn header_pre_check(data: &[u8]) -> bool {
+pub(super) fn header_pre_check(data: &[u8]) -> bool {
     let bth = BTH::from_bytes(data);
     let zero_fields_check = (bth.get_tver() == 0)
         && (bth.get_becn() == 0)
@@ -214,7 +215,7 @@ pub (super) fn header_pre_check(data: &[u8]) -> bool {
     }
 }
 
-pub (super) fn check_opcode_supported(qp_type: &QpType, opcode: &RdmaOpCode) -> bool {
+pub(super) fn check_opcode_supported(qp_type: &QpType, opcode: &RdmaOpCode) -> bool {
     match qp_type {
         QpType::Rc => match opcode {
             RdmaOpCode::SendFirst
@@ -245,6 +246,7 @@ pub (super) fn check_opcode_supported(qp_type: &QpType, opcode: &RdmaOpCode) -> 
         _ => false,
     }
 }
+
 
 #[cfg(test)]
 mod tests {

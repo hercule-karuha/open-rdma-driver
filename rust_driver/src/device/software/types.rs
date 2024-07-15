@@ -156,6 +156,12 @@ pub(crate) enum RdmaReqStatus {
     // RdmaReqStMaxGuard = 255,
 }
 
+impl RdmaReqStatus {
+    pub(crate) fn is_nromal(&self) -> bool {
+        matches!(self, RdmaReqStatus::RdmaReqStNormal)
+    }
+}
+
 
 /// Queue-pair number
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,5 +1,4 @@
 use flume::Sender;
-use smoltcp::socket::tcp::ConnectError;
 use thiserror::Error;
 
 use crate::{
@@ -17,6 +16,7 @@ use crate::{
 use super::{
     hardware_simulate::*,
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
+    packet_processor::PacketProcessor,
     types::{
         Key, Metadata, PDHandle, PKey, PayloadInfo, Qpn, RdmaGeneralMeta, RdmaMessage,
         RdmaMessageMetaCommon, RdmaOpCode, RdmaReqStatus, RethHeader, ToCardDescriptor,
@@ -279,6 +279,7 @@ impl BlueRDMALogic {
                     pmtu: desc.pmtu,
                     qp_type: desc.qp_type,
                     qp_access_flags: desc.rq_acc_flags,
+                    peer_qp: desc.peer_qpn,
                     pdkey: PDHandle::new(desc.pd_hdl),
                 };
                 let is_success = if desc.is_valid {
@@ -423,6 +424,7 @@ impl BlueRDMALogic {
             Metadata::Acknowledge(_) => Ok(RdmaReqStatus::RdmaReqStNormal),
         }
     }
+
 }
 
 unsafe impl Send for BlueRDMALogic {}
@@ -440,7 +442,38 @@ fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
 }
 
 impl NetReceiveLogic<'_> for BlueRDMALogic {
-    fn recv(&self, message: &[u8]) {
+    fn recv(&self, data: &[u8]) {
+        let message = PacketProcessor::to_rdma_message(data)
+            .expect("Fail to convert to rdma message, may be check error?");
+        let req_status = if !header_pre_check(data) {
+            RdmaReqStatus::RdmaReqStInvHeader
+        } else {
+            match self.do_validation(&message) {
+                Ok(status) => status,
+                Err(_) => {
+                    log::error!("Failed to validate the rkey");
+                    return;
+                }
+            }
+        };
+
+        let meta = &message.meta_data;
+        match meta {
+            Metadata::General(general_meta) => {
+                let Ok(mut expected_psn_manager) = self.expected_psn_manager.write() else {
+                    log::error!("Failed to lock the rkey");
+                    return;
+                };
+
+                let qpn_idx = general_meta.common_meta.dqpn.get() as usize;
+                let continous_resp = expected_psn_manager.check_continous(
+                    qpn_idx,
+                    general_meta.common_meta.psn,
+                    !req_status.is_nromal(),
+                );
+            }
+            Metadata::Acknowledge(_) => todo!(),
+        }
         // let meta = &message.meta_data;
         // let mut common = recv_default_meta(message);
         // let descriptor = match meta {
@@ -555,11 +588,11 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
         // }
     }
 
-    fn recv_raw(&self, message: &[u8]) {
+    fn recv_raw(&self, data: &[u8]) {
         let write_addr = self.raw_pkt_config.get_write_addr();
         // SAFETY: the software ensure is safe to copy raw packet to base address
         unsafe {
-            std::ptr::copy_nonoverlapping(message.as_ptr(), write_addr as *mut u8, message.len());
+            std::ptr::copy_nonoverlapping(data.as_ptr(), write_addr as *mut u8, data.len());
         }
     }
 }
