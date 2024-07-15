@@ -1,7 +1,7 @@
 use crate::{
     device::{
-        DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode,
-        ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType,
+        types::ToHostWorkRbDescWriteType, DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
+        ToCardWorkRbDescOpcode, ToHostWorkRbDescAethCode, ToHostWorkRbDescTransType,
     },
     types::{MemAccessTypeFlag, Psn, QpType},
 };
@@ -10,6 +10,152 @@ use super::{
     logic::BlueRdmaLogicError,
     packet::{Immediate, PacketError, AETH, BTH, RDMA_PAYLOAD_ALIGNMENT, RETH},
 };
+
+use num_enum::TryFromPrimitive;
+
+#[derive(TryFromPrimitive, PartialEq, Eq, Debug, Clone)]
+#[repr(u8)]
+pub(crate) enum RdmaOpCode {
+    SendFirst = 0x00,
+    SendMiddle = 0x01,
+    SendLast = 0x02,
+    SendLastWithImmediate = 0x03,
+    SendOnly = 0x04,
+    SendOnlyWithImmediate = 0x05,
+    RdmaWriteFirst = 0x06,
+    RdmaWriteMiddle = 0x07,
+    RdmaWriteLast = 0x08,
+    RdmaWriteLastWithImmediate = 0x09,
+    RdmaWriteOnly = 0x0a,
+    RdmaWriteOnlyWithImmediate = 0x0b,
+    RdmaReadRequest = 0x0c,
+    RdmaReadResponseFirst = 0x0d,
+    RdmaReadResponseMiddle = 0x0e,
+    RdmaReadResponseLast = 0x0f,
+    RdmaReadResponseOnly = 0x10,
+    Acknowledge = 0x11,
+    AtomicAcknowledge = 0x12,
+    CompareSwap = 0x13,
+    FetchAdd = 0x14,
+    Resync = 0x15,
+    SendLastWithInvalidate = 0x16,
+    SendOnlyWithInvalidate = 0x17,
+}
+
+impl RdmaOpCode {
+    pub(crate) fn write_type(&self) -> Option<ToHostWorkRbDescWriteType> {
+        match self {
+            RdmaOpCode::RdmaWriteFirst | RdmaOpCode::RdmaReadResponseFirst => {
+                Some(ToHostWorkRbDescWriteType::First)
+            }
+            RdmaOpCode::RdmaWriteMiddle | RdmaOpCode::RdmaReadResponseMiddle => {
+                Some(ToHostWorkRbDescWriteType::Middle)
+            }
+            RdmaOpCode::RdmaWriteLast
+            | RdmaOpCode::RdmaWriteLastWithImmediate
+            | RdmaOpCode::RdmaReadResponseLast => Some(ToHostWorkRbDescWriteType::Last),
+            RdmaOpCode::RdmaWriteOnlyWithImmediate
+            | RdmaOpCode::RdmaWriteOnly
+            | RdmaOpCode::RdmaReadResponseOnly => Some(ToHostWorkRbDescWriteType::Only),
+            RdmaOpCode::RdmaReadRequest | RdmaOpCode::Acknowledge => None,
+            //not support yet
+            _ => None,
+        }
+    }
+    pub(crate) fn is_first(&self) -> bool {
+        match self {
+            RdmaOpCode::RdmaWriteFirst
+            | RdmaOpCode::RdmaReadResponseFirst
+            | RdmaOpCode::SendFirst => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_middle(&self) -> bool {
+        match self {
+            RdmaOpCode::SendMiddle
+            | RdmaOpCode::RdmaWriteMiddle
+            | RdmaOpCode::RdmaReadResponseMiddle => true,
+            _ => false,
+        }
+    }
+    
+    pub(crate) fn is_last(&self) -> bool {
+        match self {
+            RdmaOpCode::SendLast
+            | RdmaOpCode::SendLastWithImmediate
+            | RdmaOpCode::SendLastWithInvalidate
+            | RdmaOpCode::RdmaWriteLast
+            | RdmaOpCode::RdmaWriteLastWithImmediate
+            | RdmaOpCode::RdmaReadResponseLast => true,
+            _ => false,
+        }
+    }
+    
+    pub(crate) fn is_only(&self) -> bool {
+        match self {
+            RdmaOpCode::SendOnly
+            | RdmaOpCode::SendOnlyWithImmediate
+            | RdmaOpCode::SendOnlyWithInvalidate
+            | RdmaOpCode::RdmaWriteOnly
+            | RdmaOpCode::RdmaWriteOnlyWithImmediate
+            | RdmaOpCode::RdmaReadRequest
+            | RdmaOpCode::CompareSwap
+            | RdmaOpCode::FetchAdd
+            | RdmaOpCode::RdmaReadResponseOnly
+            | RdmaOpCode::Acknowledge
+            | RdmaOpCode::AtomicAcknowledge => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn has_payload(&self) -> bool {
+        match self {
+            RdmaOpCode::SendFirst
+            | RdmaOpCode::SendMiddle
+            | RdmaOpCode::SendLast
+            | RdmaOpCode::SendOnly
+            | RdmaOpCode::SendLastWithImmediate
+            | RdmaOpCode::SendOnlyWithImmediate
+            | RdmaOpCode::SendLastWithInvalidate
+            | RdmaOpCode::SendOnlyWithInvalidate
+            | RdmaOpCode::RdmaWriteFirst
+            | RdmaOpCode::RdmaWriteMiddle
+            | RdmaOpCode::RdmaWriteLast
+            | RdmaOpCode::RdmaWriteOnly
+            | RdmaOpCode::RdmaWriteLastWithImmediate
+            | RdmaOpCode::RdmaWriteOnlyWithImmediate
+            | RdmaOpCode::RdmaReadResponseFirst
+            | RdmaOpCode::RdmaReadResponseMiddle
+            | RdmaOpCode::RdmaReadResponseLast
+            | RdmaOpCode::RdmaReadResponseOnly => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_resp(&self) -> bool {
+        matches!(
+            self,
+            RdmaOpCode::RdmaReadResponseFirst
+                | RdmaOpCode::RdmaReadResponseMiddle
+                | RdmaOpCode::RdmaReadResponseLast
+                | RdmaOpCode::RdmaReadResponseOnly
+        )
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum RdmaReqStatus {
+    RdmaReqStNormal = 1,
+    RdmaReqStInvAccFlag = 2,
+    RdmaReqStInvOpcode = 3,
+    RdmaReqStInvMrKey = 4,
+    RdmaReqStInvMrRegion = 5,
+    RdmaReqStUnknown = 6,
+    RdmaReqStInvHeader = 7,
+    // RdmaReqStMaxGuard = 255,
+}
+
 
 /// Queue-pair number
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -104,7 +250,7 @@ pub(crate) enum Metadata {
 }
 
 impl Metadata {
-    pub(crate) fn get_opcode(&self) -> ToHostWorkRbDescOpcode {
+    pub(crate) fn get_opcode(&self) -> RdmaOpCode {
         match self {
             Metadata::General(header) => header.common_meta.opcode.clone(),
             Metadata::Acknowledge(header) => header.common_meta.opcode.clone(),
@@ -189,20 +335,19 @@ impl PayloadInfo {
 
     /// Get the first and only element of the scatter-gather list.
     /// Note that you should only use this function when you are sure that the payload only contains one element.
-    /// 
+    ///
     /// If `skip_eth` is `true`, it will skip the first 14 bytes of the payload, which is the Ethernet header.
-    pub(crate) fn direct_data_ptr(&self,skip_eth:bool) -> Option<&[u8]> {
+    pub(crate) fn direct_data_ptr(&self, skip_eth: bool) -> Option<&[u8]> {
         let buf = self.sg_list.first();
-        buf.map(|first|{
-            let data = unsafe { std::slice::from_raw_parts(first.data, first.len)};
+        buf.map(|first| {
+            let data = unsafe { std::slice::from_raw_parts(first.data, first.len) };
             #[allow(clippy::indexing_slicing)]
-            if skip_eth{
+            if skip_eth {
                 &data[14..]
-            } else{
+            } else {
                 data
             }
         })
-        
     }
 }
 
@@ -228,11 +373,11 @@ impl From<&RETH> for RethHeader {
         }
     }
 }
-
+ 
 #[derive(Debug, Clone)]
 pub(crate) struct RdmaMessageMetaCommon {
     pub(crate) tran_type: ToHostWorkRbDescTransType,
-    pub(crate) opcode: ToHostWorkRbDescOpcode,
+    pub(crate) opcode: RdmaOpCode,
     pub(crate) solicited: bool,
     pub(crate) pkey: PKey,
     pub(crate) dqpn: Qpn,
@@ -246,7 +391,8 @@ impl TryFrom<&BTH> for RdmaMessageMetaCommon {
         Ok(Self {
             tran_type: ToHostWorkRbDescTransType::try_from(bth.get_transaction_type())
                 .map_err(|_| PacketError::FailedToConvertTransType)?,
-            opcode: ToHostWorkRbDescOpcode::try_from(bth.get_opcode())?,
+            opcode: RdmaOpCode::try_from(bth.get_opcode())
+                .map_err(|_| PacketError::InvalidOpcode)?,
             solicited: bth.get_solicited(),
             pkey: PKey::new(bth.get_pkey()),
             dqpn: Qpn(bth.get_destination_qpn()),
@@ -280,25 +426,22 @@ impl RdmaGeneralMeta {
     }
 
     pub(crate) fn is_read_request(&self) -> bool {
-        matches!(
-            self.common_meta.opcode,
-            ToHostWorkRbDescOpcode::RdmaReadRequest
-        )
+        matches!(self.common_meta.opcode, RdmaOpCode::RdmaReadRequest)
     }
 
     pub(crate) fn has_payload(&self) -> bool {
         matches!(
             self.common_meta.opcode,
-            ToHostWorkRbDescOpcode::RdmaWriteFirst
-                | ToHostWorkRbDescOpcode::RdmaWriteMiddle
-                | ToHostWorkRbDescOpcode::RdmaWriteLast
-                | ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
-                | ToHostWorkRbDescOpcode::RdmaWriteOnly
-                | ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate
-                | ToHostWorkRbDescOpcode::RdmaReadResponseFirst
-                | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
-                | ToHostWorkRbDescOpcode::RdmaReadResponseLast
-                | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
+            RdmaOpCode::RdmaWriteFirst
+                | RdmaOpCode::RdmaWriteMiddle
+                | RdmaOpCode::RdmaWriteLast
+                | RdmaOpCode::RdmaWriteLastWithImmediate
+                | RdmaOpCode::RdmaWriteOnly
+                | RdmaOpCode::RdmaWriteOnlyWithImmediate
+                | RdmaOpCode::RdmaReadResponseFirst
+                | RdmaOpCode::RdmaReadResponseMiddle
+                | RdmaOpCode::RdmaReadResponseLast
+                | RdmaOpCode::RdmaReadResponseOnly
         )
     }
 
@@ -445,7 +588,7 @@ impl SGList {
     /// The function iterate from `cur_level` of the scatter-gather list and cut the buffer of `length` from the list.
     /// If current level is not enough, it will move to the next level.
     /// All the slice will be added to the `payload`.
-    #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects)]
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
     pub(crate) fn cut(&mut self, mut length: u32) -> Result<PayloadInfo, BlueRdmaLogicError> {
         let mut current_level = self.cur_level as usize;
         let mut payload = PayloadInfo::new();
@@ -455,7 +598,9 @@ impl SGList {
             if self.data[current_level].len >= length {
                 let addr = self.data[current_level].addr as *mut u8;
                 payload.add(addr, length as usize);
-                self.data[current_level].addr = self.data[current_level].addr.wrapping_add(u64::from(length));
+                self.data[current_level].addr = self.data[current_level]
+                    .addr
+                    .wrapping_add(u64::from(length));
                 self.data[current_level].len -= length;
                 if self.data[current_level].len == 0 {
                     current_level += 1;
@@ -487,12 +632,7 @@ impl SGList {
     #[cfg(test)]
     pub(crate) fn into_four_sges(
         self,
-    ) -> (
-        DescSge,
-        Option<DescSge>,
-        Option<DescSge>,
-        Option<DescSge>,
-    ) {
+    ) -> (DescSge, Option<DescSge>, Option<DescSge>, Option<DescSge>) {
         use crate::types::Key;
 
         let sge1 = (self.len > 1).then(|| DescSge {
@@ -568,55 +708,55 @@ pub(crate) struct ToCardWriteDescriptor {
 }
 
 impl ToCardWriteDescriptor {
-    pub(crate) fn write_only_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
+    pub(crate) fn write_only_opcode_with_imm(&self) -> (RdmaOpCode, Option<u32>) {
         if self.is_first && self.is_last {
             // is_first = True and is_last = True, means only one packet
             match (self.is_resp(), self.has_imm()) {
-                (true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseOnly, None),
-                (false, true) => (ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate, self.imm),
-                (false, false) => (ToHostWorkRbDescOpcode::RdmaWriteOnly, None),
+                (true, _) => (RdmaOpCode::RdmaReadResponseOnly, None),
+                (false, true) => (RdmaOpCode::RdmaWriteOnlyWithImmediate, self.imm),
+                (false, false) => (RdmaOpCode::RdmaWriteOnly, None),
             }
         } else if self.is_first {
             // self.is_last = False
             if self.is_resp() {
-                (ToHostWorkRbDescOpcode::RdmaReadResponseFirst, None)
+                (RdmaOpCode::RdmaReadResponseFirst, None)
             } else {
-                (ToHostWorkRbDescOpcode::RdmaWriteFirst, None)
+                (RdmaOpCode::RdmaWriteFirst, None)
             }
         } else {
             // self.is_last = True
             match (self.is_resp(), self.has_imm()) {
-                (true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None),
-                (false, true) => (ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate, self.imm),
-                (false, false) => (ToHostWorkRbDescOpcode::RdmaWriteLast, None),
+                (true, _) => (RdmaOpCode::RdmaReadResponseLast, None),
+                (false, true) => (RdmaOpCode::RdmaWriteLastWithImmediate, self.imm),
+                (false, false) => (RdmaOpCode::RdmaWriteLast, None),
             }
         }
     }
 
-    pub(crate) fn write_first_opcode(&self) -> ToHostWorkRbDescOpcode {
+    pub(crate) fn write_first_opcode(&self) -> RdmaOpCode {
         match (self.is_first, self.is_resp()) {
-            (true, true) => ToHostWorkRbDescOpcode::RdmaReadResponseFirst,
-            (true, false) => ToHostWorkRbDescOpcode::RdmaWriteFirst,
-            (false, true) => ToHostWorkRbDescOpcode::RdmaReadResponseMiddle,
-            (false, false) => ToHostWorkRbDescOpcode::RdmaWriteMiddle,
+            (true, true) => RdmaOpCode::RdmaReadResponseFirst,
+            (true, false) => RdmaOpCode::RdmaWriteFirst,
+            (false, true) => RdmaOpCode::RdmaReadResponseMiddle,
+            (false, false) => RdmaOpCode::RdmaWriteMiddle,
         }
     }
 
-    pub(crate) fn write_middle_opcode(&self) -> ToHostWorkRbDescOpcode {
+    pub(crate) fn write_middle_opcode(&self) -> RdmaOpCode {
         if self.is_resp() {
-            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+            RdmaOpCode::RdmaReadResponseMiddle
         } else {
-            ToHostWorkRbDescOpcode::RdmaWriteMiddle
+            RdmaOpCode::RdmaWriteMiddle
         }
     }
 
-    pub(crate) fn write_last_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
+    pub(crate) fn write_last_opcode_with_imm(&self) -> (RdmaOpCode, Option<u32>) {
         match (self.is_last, self.is_resp(), self.has_imm()) {
-            (true, true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None), // ignore read response last with imm
-            (true, false, true) => (ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate, self.imm),
-            (true, false, false) => (ToHostWorkRbDescOpcode::RdmaWriteLast, None),
-            (false, true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseMiddle, None),
-            (false, false, _) => (ToHostWorkRbDescOpcode::RdmaWriteMiddle, None),
+            (true, true, _) => (RdmaOpCode::RdmaReadResponseLast, None), // ignore read response last with imm
+            (true, false, true) => (RdmaOpCode::RdmaWriteLastWithImmediate, self.imm),
+            (true, false, false) => (RdmaOpCode::RdmaWriteLast, None),
+            (false, true, _) => (RdmaOpCode::RdmaReadResponseMiddle, None),
+            (false, false, _) => (RdmaOpCode::RdmaWriteMiddle, None),
         }
     }
 

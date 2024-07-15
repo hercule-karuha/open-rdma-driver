@@ -123,9 +123,7 @@ impl UDPReceiveAgent {
                     #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
                     // if we pass the CRC check, it should be ok
                     let received_data = &received_data[RDMA_PKT_OFFSET..length - ICRC_SIZE];
-                    if let Ok(mut message) = PacketProcessor::to_rdma_message(received_data) {
-                        receiver.recv(&mut message);
-                    }
+                    receiver.recv(received_data);
                 }
             }
         }));
@@ -215,10 +213,7 @@ mod tests {
     unsafe impl Send for DummyNetReceiveLogic {}
 
     impl NetReceiveLogic<'_> for DummyNetReceiveLogic {
-        fn recv(&self, msg: &mut RdmaMessage) {
-            let new_msg = msg.clone();
-            self.packets.lock().unwrap().push(new_msg);
-        }
+        fn recv(&self, message: &[u8]) {}
         fn recv_raw(&self, _message: &[u8]) {}
     }
 }

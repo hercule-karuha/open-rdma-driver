@@ -14,7 +14,7 @@ use crate::device::software::types::RdmaGeneralMeta;
 use crate::device::software::types::RdmaMessage;
 use crate::device::software::types::RdmaMessageMetaCommon;
 use crate::device::software::types::RethHeader;
-use crate::device::ToHostWorkRbDescOpcode;
+use crate::device::software::types::RdmaOpCode;
 use crate::device::ToHostWorkRbDescTransType;
 use crate::types::Psn;
 
@@ -28,7 +28,7 @@ fn test_header_bth_reth() {
     let buf = [0u8; BTH_SIZE + RETH_SIZE + 512];
     let bth = BTH::from_bytes(&buf);
     bth.set_opcode_and_type(
-        ToHostWorkRbDescOpcode::RdmaWriteFirst,
+        RdmaOpCode::RdmaWriteFirst,
         crate::device::ToHostWorkRbDescTransType::Rc,
     );
     bth.set_destination_qpn(1);
@@ -51,7 +51,7 @@ fn test_header_bth_reth() {
             );
             assert_eq!(
                 header.common_meta.opcode.clone() as u8,
-                ToHostWorkRbDescOpcode::RdmaWriteFirst as u8
+                RdmaOpCode::RdmaWriteFirst as u8
             );
             assert!(header.common_meta.solicited);
             assert_eq!(header.common_meta.dqpn.get(), 1);
@@ -76,7 +76,7 @@ fn test_header_bth_reth_imm() {
     let mut buf = [0u8; BTH_SIZE + RETH_SIZE + IMM_SIZE + 512];
     let bth = BTH::from_bytes(&buf);
     bth.set_opcode_and_type(
-        ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate,
+        RdmaOpCode::RdmaWriteLastWithImmediate,
         crate::device::ToHostWorkRbDescTransType::Rc,
     );
     bth.set_destination_qpn(1);
@@ -100,7 +100,7 @@ fn test_header_bth_reth_imm() {
             );
             assert_eq!(
                 header.common_meta.opcode.clone() as u8,
-                ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate as u8
+                RdmaOpCode::RdmaWriteLastWithImmediate as u8
             );
             assert!(header.common_meta.solicited);
             assert_eq!(header.common_meta.dqpn.get(), 1);
@@ -126,7 +126,7 @@ fn test_header_bth_reth_reth() {
     let buf = [0u8; BTH_SIZE + RETH_SIZE + RETH_SIZE];
     let bth = BTH::from_bytes(&buf);
     bth.set_opcode_and_type(
-        ToHostWorkRbDescOpcode::RdmaReadRequest,
+        RdmaOpCode::RdmaReadRequest,
         crate::device::ToHostWorkRbDescTransType::Rc,
     );
     bth.set_destination_qpn(1);
@@ -152,7 +152,7 @@ fn test_header_bth_reth_reth() {
             );
             assert_eq!(
                 header.common_meta.opcode.clone() as u8,
-                ToHostWorkRbDescOpcode::RdmaReadRequest as u8
+                RdmaOpCode::RdmaReadRequest as u8
             );
             assert!(header.common_meta.solicited);
             assert_eq!(header.common_meta.dqpn.get(), 1);
@@ -181,7 +181,7 @@ fn test_header_bth_aeth() {
     let buf = [0u8; BTH_SIZE + AETH_SIZE];
     let bth = BTH::from_bytes(&buf);
     bth.set_opcode_and_type(
-        ToHostWorkRbDescOpcode::Acknowledge,
+        RdmaOpCode::Acknowledge,
         crate::device::ToHostWorkRbDescTransType::Rc,
     );
     bth.set_destination_qpn(1);
@@ -202,7 +202,7 @@ fn test_header_bth_aeth() {
             );
             assert_eq!(
                 header.common_meta.opcode.clone() as u8,
-                ToHostWorkRbDescOpcode::Acknowledge as u8
+                RdmaOpCode::Acknowledge as u8
             );
             assert!(header.common_meta.solicited);
             assert_eq!(header.common_meta.dqpn.get(), 1);
@@ -263,7 +263,7 @@ fn test_pkt_processor_to_buf() {
         meta_data: Metadata::General(RdmaGeneralMeta {
             common_meta: RdmaMessageMetaCommon {
                 tran_type: ToHostWorkRbDescTransType::Rc,
-                opcode: ToHostWorkRbDescOpcode::RdmaWriteFirst,
+                opcode: RdmaOpCode::RdmaWriteFirst,
                 solicited: false,
                 pkey: PKey::new(0),
                 dqpn: Qpn::new(3),
@@ -287,7 +287,7 @@ fn test_pkt_processor_to_buf() {
     let bth = BTH::from_bytes(&buf);
     assert_eq!(
         bth.get_opcode(),
-        ToHostWorkRbDescOpcode::RdmaWriteFirst as u8
+        RdmaOpCode::RdmaWriteFirst as u8
     );
     assert_eq!(bth.get_destination_qpn(), 3);
     assert_eq!(bth.get_psn(), 0x123456);

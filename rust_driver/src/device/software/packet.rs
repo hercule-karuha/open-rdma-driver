@@ -13,7 +13,7 @@ use crate::{
 
 use super::types::{
     AethHeader, Metadata, PayloadInfo, RdmaGeneralMeta, RdmaMessage, RdmaMessageMetaCommon,
-    RethHeader,
+    RethHeader,RdmaOpCode
 };
 
 pub(crate) const IPV4_HEADER_SIZE: usize = 20;
@@ -122,7 +122,7 @@ impl BTH {
 
     pub(crate) fn set_opcode_and_type(
         &mut self,
-        opcode: ToHostWorkRbDescOpcode,
+        opcode: RdmaOpCode,
         tran_type: ToHostWorkRbDescTransType,
     ) {
         self.tran_type_and_opcode =
