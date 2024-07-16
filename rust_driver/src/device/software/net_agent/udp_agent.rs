@@ -85,7 +85,7 @@ impl UDPReceiveAgent {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
 
-        let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
+        let socket = Socket::new(Domain::PACKET, Type::RAW, Some(Protocol::UDP))?;
         let addr = SocketAddrV4::new(addr, port);
         socket.bind(&addr.into())?;
         info!("UDP server started at {}:{}", addr.ip(), addr.port());
@@ -105,6 +105,7 @@ impl UDPReceiveAgent {
 
                     if !check_rdma_pkt(received_data) {
                         receiver.recv_raw(received_data);
+                        continue;
                     }
 
                     match is_icrc_valid(received_data) {
@@ -122,7 +123,7 @@ impl UDPReceiveAgent {
 
                     #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
                     // if we pass the CRC check, it should be ok
-                    let received_data = &received_data[RDMA_PKT_OFFSET..length - ICRC_SIZE];
+                    let received_data = &received_data[..length - ICRC_SIZE];
                     receiver.recv(received_data);
                 }
             }

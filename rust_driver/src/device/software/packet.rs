@@ -266,7 +266,6 @@ pub(crate) struct AETH {
 
 impl AETH {
     /// SAFETY: we assmue the buffer is a valid AETH
-    #[cfg(test)]
     #[allow(clippy::transmute_ptr_to_ref)]
     pub(crate) fn from_bytes(bytes: &[u8]) -> &'static mut Self {
         unsafe { transmute(bytes.as_ptr()) }

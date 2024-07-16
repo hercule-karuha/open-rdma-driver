@@ -403,6 +403,7 @@ impl BlueRDMALogic {
                 let Some(mr) = mr_rkey_table.get(&r_key) else {
                     return Ok(RdmaReqStatus::RdmaReqStInvMrKey);
                 };
+
                 let read_guard = mr.read()?;
                 // check the permission.
                 if !read_guard.acc_flags.contains(needed_permissions) {
@@ -424,7 +425,6 @@ impl BlueRDMALogic {
             Metadata::Acknowledge(_) => Ok(RdmaReqStatus::RdmaReqStNormal),
         }
     }
-
 }
 
 unsafe impl Send for BlueRDMALogic {}
@@ -471,6 +471,11 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     general_meta.common_meta.psn,
                     !req_status.is_nromal(),
                 );
+
+                let va = general_meta.reth.va;
+                if req_status.is_nromal() && general_meta.has_payload() {
+                    message.payload.copy_to(va as *mut u8);
+                }
             }
             Metadata::Acknowledge(_) => todo!(),
         }
