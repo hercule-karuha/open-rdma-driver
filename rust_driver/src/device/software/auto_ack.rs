@@ -1,6 +1,6 @@
 use super::packet::{AETH, BTH, RDMA_DEFAULT_PORT};
 use super::types::RdmaOpCode;
-use crate::device::layout::NReth;
+use crate::device::layout::{Aeth, Bth, NReth};
 use crate::device::ToHostWorkRbDescTransType;
 use crate::responser::ACKPACKET_SIZE;
 use crate::types::{Psn, Qpn};
@@ -33,8 +33,8 @@ const ACKPACKET_SIZE_WITHOUT_MAC_AND_IPV4: usize =
 
 const ACKPACKET_SIZE_WITHOUT_MAC: usize = IPV4_HEADER_SIZE + ACKPACKET_SIZE_WITHOUT_MAC_AND_IPV4;
 
-const AUTO_ACK_CODE: u8 = 0;
-const AUTO_ACK_VALUE: u8 = 0b0001_1111;
+const AUTO_ACK_CODE: u32 = 0;
+const AUTO_ACK_VALUE: u32 = 0b0001_1111;
 
 pub(super) fn write_auto_ack(
     buf: &mut [u8],
@@ -80,19 +80,22 @@ pub(super) fn write_auto_ack(
         udp_header.set_source(RDMA_DEFAULT_PORT);
         udp_header.set_destination(RDMA_DEFAULT_PORT);
     }
-    let bth = BTH::from_bytes(&buf[PKT_ETH_SIZE + PKT_IPV4_SIZE + PKT_UDP_SIZE..]);
-
-    bth.set_opcode_and_type(RdmaOpCode::Acknowledge, ToHostWorkRbDescTransType::Rc);
-    bth.set_pad_cnt(0);
-    bth.set_ack_req(false);
-    bth.set_pkey(pkey);
-    bth.set_destination_qpn(peer_qp.get());
+    let mut bth = Bth(&mut buf[PKT_ETH_SIZE + PKT_IPV4_SIZE + PKT_UDP_SIZE..]);
+    bth.set_opcode(RdmaOpCode::Acknowledge as u32);
+    bth.set_pad_count(0);
+    bth.set_pkey(0);
+    bth.set_ecn_and_resv6(0);
+    bth.set_dqpn(peer_qp.get());
     bth.set_psn(expected_psn.get());
 
-    let aeth =
-        AETH::from_bytes(&buf[PKT_ETH_SIZE + PKT_IPV4_SIZE + PKT_UDP_SIZE + BTH_HEADER_SIZE..]);
-    aeth.set_aeth_code_and_value(AUTO_ACK_CODE, AUTO_ACK_VALUE);
+    let mut aeth = Aeth(&mut buf[PKT_ETH_SIZE + PKT_IPV4_SIZE + PKT_UDP_SIZE + BTH_HEADER_SIZE..]);
+    aeth.set_aeth_code(AUTO_ACK_CODE);
+    aeth.set_aeth_value(AUTO_ACK_VALUE);
+    aeth.set_msn(pkey.into());
 
-    let mut nreth = NReth(&mut buf[PKT_ETH_SIZE + PKT_IPV4_SIZE + PKT_UDP_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE..]);
+    let mut nreth = NReth(
+        &mut buf
+            [PKT_ETH_SIZE + PKT_IPV4_SIZE + PKT_UDP_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE..],
+    );
     nreth.set_last_retry_psn(expected_psn.get());
 }
