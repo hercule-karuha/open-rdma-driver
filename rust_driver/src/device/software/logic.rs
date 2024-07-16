@@ -5,9 +5,9 @@ use crate::{
     device::{
         CtrlRbDescOpcode, ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc,
         ToHostCtrlRbDescCommon, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescAethCode,
-        ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
-        ToHostWorkRbDescStatus, ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp,
-        ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
+        ToHostWorkRbDescCommon, ToHostWorkRbDescRead, ToHostWorkRbDescStatus,
+        ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
+        ToHostWorkRbDescWriteWithImm,
     },
     types::{MemAccessTypeFlag, Msn, Pmtu, Psn, QpType},
     utils::get_first_packet_max_length,
@@ -16,10 +16,11 @@ use crate::{
 use super::{
     hardware_simulate::*,
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
+    packet_processor::PacketProcessor,
     types::{
         Key, Metadata, PDHandle, PKey, PayloadInfo, Qpn, RdmaGeneralMeta, RdmaMessage,
-        RdmaMessageMetaCommon, RethHeader, ToCardDescriptor, ToCardReadDescriptor,
-        ToCardWriteDescriptor,
+        RdmaMessageMetaCommon, RdmaOpCode, RdmaReqStatus, RethHeader, ToCardDescriptor,
+        ToCardReadDescriptor, ToCardWriteDescriptor,
     },
 };
 use std::{
@@ -129,7 +130,7 @@ impl BlueRDMALogic {
         mut common_meta: RdmaMessageMetaCommon,
     ) -> Result<(), BlueRdmaLogicError> {
         let local_sa = &req.sge.data[0];
-        common_meta.opcode = ToHostWorkRbDescOpcode::RdmaReadRequest;
+        common_meta.opcode = RdmaOpCode::RdmaReadRequest;
 
         let msg = RdmaMessage {
             meta_data: Metadata::General(RdmaGeneralMeta {
@@ -165,7 +166,7 @@ impl BlueRDMALogic {
             let common = desc.common();
             RdmaMessageMetaCommon {
                 tran_type: desc.common().qp_type.into(),
-                opcode: ToHostWorkRbDescOpcode::RdmaWriteOnly,
+                opcode: RdmaOpCode::RdmaWriteOnly,
                 solicited: false,
                 // We use the pkey to store msn
                 pkey: PKey::new(common.msn.get()),
@@ -278,6 +279,7 @@ impl BlueRDMALogic {
                     pmtu: desc.pmtu,
                     qp_type: desc.qp_type,
                     qp_access_flags: desc.rq_acc_flags,
+                    peer_qp: desc.peer_qpn,
                     pdkey: PDHandle::new(desc.pd_hdl),
                 };
                 let is_success = if desc.is_valid {
@@ -363,33 +365,65 @@ impl BlueRDMALogic {
     /// * if the permission is valid. If not, return `InvAccFlag`
     /// * if the va and length are valid. If not, return `InvMrRegion`
     /// Otherwise, return `RDMA_REQ_ST_NORMAL`
-    fn validate_rkey(
-        &self,
-        rkey: Key,
-        needed_permissions: MemAccessTypeFlag,
-        va: u64,
-        length: u32,
-    ) -> Result<ToHostWorkRbDescStatus, BlueRdmaLogicError> {
-        let mr_rkey_table = self.mr_rkey_table.read()?;
-        let Some(mr) = mr_rkey_table.get(&rkey) else {
-            return Ok(ToHostWorkRbDescStatus::InvMrKey);
-        };
+    fn do_validation(&self, message: &RdmaMessage) -> Result<RdmaReqStatus, BlueRdmaLogicError> {
+        match &message.meta_data {
+            Metadata::General(common_meta) => {
+                let opcode = &common_meta.common_meta.opcode;
+                let needed_permissions = common_meta.needed_permissions();
+                let qp_table = self.qp_table.read()?;
+                let Some(qp_entry) = qp_table.get(&common_meta.common_meta.dqpn) else {
+                    return Ok(RdmaReqStatus::RdmaReqStInvHeader);
+                };
 
-        let read_guard = mr.read()?;
+                if !check_opcode_supported(&qp_entry.inner.qp_type, opcode) {
+                    return Ok(RdmaReqStatus::RdmaReqStInvOpcode);
+                }
+                if !qp_entry.inner.qp_access_flags.contains(needed_permissions) {
+                    return Ok(RdmaReqStatus::RdmaReqStInvAccFlag);
+                }
 
-        // check the permission.
-        if !read_guard.acc_flags.contains(needed_permissions) {
-            return Ok(ToHostWorkRbDescStatus::InvAccFlag);
+                let pmtu = u64::from(&qp_entry.inner.pmtu);
+                let is_first_mid = opcode.is_first() || opcode.is_middle();
+                let is_mid = opcode.is_middle();
+                let is_last_only = opcode.is_last() || opcode.is_only();
+
+                let payload_length = u64::from(common_meta.reth.len);
+                let eq_pmtu = payload_length == pmtu;
+                let gt_pmtu = payload_length > pmtu;
+
+                if !((is_first_mid && !gt_pmtu)
+                    || (is_mid && eq_pmtu)
+                    || (is_last_only && !gt_pmtu))
+                {
+                    return Ok(RdmaReqStatus::RdmaReqStInvHeader);
+                }
+
+                let r_key = common_meta.reth.rkey;
+                let mr_rkey_table = self.mr_rkey_table.read()?;
+                let Some(mr) = mr_rkey_table.get(&r_key) else {
+                    return Ok(RdmaReqStatus::RdmaReqStInvMrKey);
+                };
+
+                let read_guard = mr.read()?;
+                // check the permission.
+                if !read_guard.acc_flags.contains(needed_permissions) {
+                    return Ok(RdmaReqStatus::RdmaReqStInvAccFlag);
+                }
+
+                let va = common_meta.reth.va;
+
+                // check if the va and length are valid.
+                if read_guard.addr > va
+                    || read_guard.addr.wrapping_add(read_guard.len as u64)
+                        < va.wrapping_add(u64::from(payload_length))
+                {
+                    return Ok(RdmaReqStatus::RdmaReqStInvMrRegion);
+                }
+
+                Ok(RdmaReqStatus::RdmaReqStNormal)
+            }
+            Metadata::Acknowledge(_) => Ok(RdmaReqStatus::RdmaReqStNormal),
         }
-
-        // check if the va and length are valid.
-        if read_guard.addr > va
-            || read_guard.addr.wrapping_add(read_guard.len as u64)
-                < va.wrapping_add(u64::from(length))
-        {
-            return Ok(ToHostWorkRbDescStatus::InvMrRegion);
-        }
-        Ok(ToHostWorkRbDescStatus::Normal)
     }
 }
 
@@ -408,125 +442,50 @@ fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
 }
 
 impl NetReceiveLogic<'_> for BlueRDMALogic {
-    fn recv(&self, message: &mut RdmaMessage) {
-        let meta = &message.meta_data;
-        let mut common = recv_default_meta(message);
-        let descriptor = match meta {
-            Metadata::General(header) => {
-                // validate the rkey
-                let reky = header.reth.rkey;
-                let needed_permissions = header.needed_permissions();
-                let va = header.reth.va;
-                let len = header.reth.len;
-                let Ok(status) = self.validate_rkey(reky, needed_permissions, va, len) else {
+    fn recv(&self, data: &[u8]) {
+        let message = PacketProcessor::to_rdma_message(data)
+            .expect("Fail to convert to rdma message, may be check error?");
+        let req_status = if !header_pre_check(data) {
+            RdmaReqStatus::RdmaReqStInvHeader
+        } else {
+            match self.do_validation(&message) {
+                Ok(status) => status,
+                Err(_) => {
                     log::error!("Failed to validate the rkey");
                     return;
-                };
-
-                // Copy the payload to the memory
-                if status.is_ok() && header.has_payload() {
-                    message.payload.copy_to(va as *mut u8);
-                }
-
-                // The default value will not be used since the `write_type` will only appear
-                // in those write related opcodes.
-                let write_type = header
-                    .common_meta
-                    .opcode
-                    .write_type()
-                    .unwrap_or(ToHostWorkRbDescWriteType::Only);
-
-                common.status = status;
-                let is_read_resp = header.common_meta.opcode.is_resp();
-
-                // Write a descriptor to host
-                match header.common_meta.opcode {
-                    ToHostWorkRbDescOpcode::RdmaWriteFirst
-                    | ToHostWorkRbDescOpcode::RdmaWriteMiddle
-                    | ToHostWorkRbDescOpcode::RdmaWriteLast
-                    | ToHostWorkRbDescOpcode::RdmaWriteOnly
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseFirst
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseLast
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
-                        ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                            common,
-                            is_read_resp,
-                            write_type,
-                            psn: header.common_meta.psn,
-                            addr: header.reth.va,
-                            len: header.reth.len,
-                            can_auto_ack: false,
-                        })
-                    }
-                    ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
-                    | ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate => {
-                        ToHostWorkRbDesc::WriteWithImm(ToHostWorkRbDescWriteWithImm {
-                            common,
-                            write_type,
-                            psn: header.common_meta.psn,
-                            imm: header.imm.unwrap_or_else(|| {
-                                log::error!("The immediate data is not found");
-                                0
-                            }),
-                            addr: header.reth.va,
-                            len: header.reth.len,
-                            key: header.reth.rkey.into(),
-                        })
-                    }
-                    ToHostWorkRbDescOpcode::RdmaReadRequest => {
-                        let Some(sec_reth) = header.secondary_reth else {
-                            log::error!("The secondary reth is not found");
-                            return;
-                        };
-                        ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
-                            common,
-                            len: header.reth.len,
-                            laddr: header.reth.va,
-                            lkey: header.reth.rkey.into(),
-                            raddr: sec_reth.va,
-                            rkey: sec_reth.rkey.into(),
-                        })
-                    }
-                    ToHostWorkRbDescOpcode::Acknowledge => {
-                        unimplemented!()
-                    }
-                }
-            }
-            Metadata::Acknowledge(header) => {
-                common.status = ToHostWorkRbDescStatus::Normal;
-                match header.aeth_code {
-                    ToHostWorkRbDescAethCode::Ack => ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
-                        common,
-                        #[allow(clippy::cast_possible_truncation)]
-                        msn: crate::types::Msn::new(header.msn as u16), // msn is u16 currently. So we can just truncate it.
-                        value: header.aeth_value,
-                        psn: crate::types::Psn::new(header.common_meta.psn.get()),
-                        code: ToHostWorkRbDescAethCode::Ack,
-                        retry_psn: Psn::default(),
-                    }),
-                    ToHostWorkRbDescAethCode::Rnr
-                    | ToHostWorkRbDescAethCode::Rsvd
-                    | ToHostWorkRbDescAethCode::Nak => {
-                        // just ignore
-                        unimplemented!()
-                    }
                 }
             }
         };
 
-        // push the descriptor to the ring buffer
-        #[allow(clippy::unwrap_used)] // if the pipe in software is broken, we should panic.
-        {
-            self.to_host_data_descriptor_queue.send(descriptor).unwrap();
+        let meta = &message.meta_data;
+        match meta {
+            Metadata::General(general_meta) => {
+                let Ok(mut expected_psn_manager) = self.expected_psn_manager.write() else {
+                    log::error!("Failed to lock the rkey");
+                    return;
+                };
+
+                let qpn_idx = general_meta.common_meta.dqpn.get() as usize;
+                let continous_resp = expected_psn_manager.check_continous(
+                    qpn_idx,
+                    general_meta.common_meta.psn,
+                    !req_status.is_nromal(),
+                );
+
+                let va = general_meta.reth.va;
+                if req_status.is_nromal() && general_meta.has_payload() {
+                    message.payload.copy_to(va as *mut u8);
+                }
+            }
+            Metadata::Acknowledge(_) => todo!(),
         }
     }
 
-    fn recv_raw(&self, message: &[u8]) {
+    fn recv_raw(&self, data: &[u8]) {
         let write_addr = self.raw_pkt_config.get_write_addr();
         // SAFETY: the software ensure is safe to copy raw packet to base address
         unsafe {
-            std::ptr::copy_nonoverlapping(message.as_ptr(), write_addr as *mut u8, message.len());
+            std::ptr::copy_nonoverlapping(data.as_ptr(), write_addr as *mut u8, data.len());
         }
     }
 }

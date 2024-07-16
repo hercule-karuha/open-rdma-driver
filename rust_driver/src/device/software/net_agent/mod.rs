@@ -12,8 +12,8 @@ use std::io;
 pub(crate) mod udp_agent;
 
 pub(crate) trait NetReceiveLogic<'a>: Send + Sync + Debug {
-    fn recv(&self, message: &mut RdmaMessage);
-    fn recv_raw(&self, message: &[u8]);
+    fn recv(&self, data: &[u8]);
+    fn recv_raw(&self, data: &[u8]);
 }
 
 pub(crate) trait NetSendAgent: Debug {

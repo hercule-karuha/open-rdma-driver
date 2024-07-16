@@ -1,17 +1,16 @@
 use std::net::Ipv4Addr;
 use thiserror::Error;
 
-use crate::device::ToHostWorkRbDescOpcode;
-
 use super::{
     packet::{
+        
         PacketError, RdmaAcknowledgeHeader, RdmaPacketHeader, RdmaReadRequestHeader,
         RdmaReadResponseFirstHeader, RdmaReadResponseLastHeader, RdmaReadResponseMiddleHeader,
         RdmaReadResponseOnlyHeader, RdmaWriteFirstHeader, RdmaWriteLastHeader,
         RdmaWriteLastWithImmediateHeader, RdmaWriteMiddleHeader, RdmaWriteOnlyHeader,
         RdmaWriteOnlyWithImmediateHeader, BTH,
     },
-    types::RdmaMessage,
+    types::{RdmaMessage,RdmaOpCode},
 };
 
 use super::packet::{
@@ -25,57 +24,57 @@ pub(crate) struct PacketProcessor;
 
 impl PacketProcessor {
     pub(crate) fn to_rdma_message(buf: &[u8]) -> Result<RdmaMessage, PacketError> {
-        let opcode = ToHostWorkRbDescOpcode::try_from(BTH::from_bytes(buf).get_opcode());
+        let opcode = RdmaOpCode::try_from(BTH::from_bytes(buf).get_opcode());
         match opcode {
-            Ok(ToHostWorkRbDescOpcode::RdmaWriteFirst) => {
+            Ok(RdmaOpCode::RdmaWriteFirst) => {
                 let header = RdmaWriteFirstHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaWriteMiddle) => {
+            Ok(RdmaOpCode::RdmaWriteMiddle) => {
                 let header = RdmaWriteMiddleHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaWriteLast) => {
+            Ok(RdmaOpCode::RdmaWriteLast) => {
                 let header = RdmaWriteLastHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate) => {
+            Ok(RdmaOpCode::RdmaWriteLastWithImmediate) => {
                 let header = RdmaWriteLastWithImmediateHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaWriteOnly) => {
+            Ok(RdmaOpCode::RdmaWriteOnly) => {
                 let header = RdmaWriteOnlyHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate) => {
+            Ok(RdmaOpCode::RdmaWriteOnlyWithImmediate) => {
                 let header = RdmaWriteOnlyWithImmediateHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaReadRequest) => {
+            Ok(RdmaOpCode::RdmaReadRequest) => {
                 let header = RdmaReadRequestHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaReadResponseFirst) => {
+            Ok(RdmaOpCode::RdmaReadResponseFirst) => {
                 let header = RdmaReadResponseFirstHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaReadResponseMiddle) => {
+            Ok(RdmaOpCode::RdmaReadResponseMiddle) => {
                 let header = RdmaReadResponseMiddleHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaReadResponseLast) => {
+            Ok(RdmaOpCode::RdmaReadResponseLast) => {
                 let header = RdmaReadResponseLastHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::RdmaReadResponseOnly) => {
+            Ok(RdmaOpCode::RdmaReadResponseOnly) => {
                 let header = RdmaReadResponseOnlyHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Ok(ToHostWorkRbDescOpcode::Acknowledge) => {
+            Ok(RdmaOpCode::Acknowledge) => {
                 let header = RdmaAcknowledgeHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            Err(_) => Err(PacketError::InvalidOpcode),
+            _ => Err(PacketError::InvalidOpcode)
         }
     }
 
@@ -84,54 +83,55 @@ impl PacketProcessor {
         message: &RdmaMessage,
     ) -> Result<usize, PacketError> {
         match message.meta_data.get_opcode() {
-            ToHostWorkRbDescOpcode::RdmaWriteFirst => {
+            RdmaOpCode::RdmaWriteFirst => {
                 let header = RdmaWriteFirstHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaWriteMiddle => {
+            RdmaOpCode::RdmaWriteMiddle => {
                 let header = RdmaWriteMiddleHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaWriteLast => {
+            RdmaOpCode::RdmaWriteLast => {
                 let header = RdmaWriteLastHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate => {
+            RdmaOpCode::RdmaWriteLastWithImmediate => {
                 let header = RdmaWriteLastWithImmediateHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaWriteOnly => {
+            RdmaOpCode::RdmaWriteOnly => {
                 let header = RdmaWriteOnlyHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate => {
+            RdmaOpCode::RdmaWriteOnlyWithImmediate => {
                 let header = RdmaWriteOnlyWithImmediateHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaReadRequest => {
+            RdmaOpCode::RdmaReadRequest => {
                 let header = RdmaReadRequestHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
+            RdmaOpCode::RdmaReadResponseFirst => {
                 let header = RdmaReadResponseFirstHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => {
+            RdmaOpCode::RdmaReadResponseMiddle => {
                 let header = RdmaReadResponseMiddleHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaReadResponseLast => {
+            RdmaOpCode::RdmaReadResponseLast => {
                 let header = RdmaReadResponseLastHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
+            RdmaOpCode::RdmaReadResponseOnly => {
                 let header = RdmaReadResponseOnlyHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            ToHostWorkRbDescOpcode::Acknowledge => {
+            RdmaOpCode::Acknowledge => {
                 let header = RdmaAcknowledgeHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
+            _ => Err(PacketError::InvalidOpcode)
         }
     }
 }

@@ -1,8 +1,6 @@
-use num_enum::TryFromPrimitive;
-
 use super::packet::BTH;
-use super::types::{Key, PDHandle};
-use crate::types::{MemAccessTypeFlag, Pmtu, Psn, QpType};
+use super::types::{Key, PDHandle, RdmaOpCode};
+use crate::types::{MemAccessTypeFlag, Pmtu, Psn, QpType, Qpn};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
     usize,
@@ -10,35 +8,6 @@ use std::{
 
 const RAW_PKT_BLOCK_SIZE: usize = 4096;
 const PSN_MAX_WINDOW_SIZE: u32 = 1 << 23_i32;
-
-#[derive(TryFromPrimitive, PartialEq, Eq, Debug, Clone)]
-#[repr(u8)]
-pub(crate) enum RdmaOpCode {
-    SendFirst = 0x00,
-    SendMiddle = 0x01,
-    SendLast = 0x02,
-    SendLastWithImmediate = 0x03,
-    SendOnly = 0x04,
-    SendOnlyWithImmediate = 0x05,
-    RdmaWriteFirst = 0x06,
-    RdmaWriteMiddle = 0x07,
-    RdmaWriteLast = 0x08,
-    RdmaWriteLastWithImmediate = 0x09,
-    RdmaWriteOnly = 0x0a,
-    RdmaWriteOnlyWithImmediate = 0x0b,
-    RdmaReadRequest = 0x0c,
-    RdmaReadResponseFirst = 0x0d,
-    RdmaReadResponseMiddle = 0x0e,
-    RdmaReadResponseLast = 0x0f,
-    RdmaReadResponseOnly = 0x10,
-    Acknowledge = 0x11,
-    AtomicAcknowledge = 0x12,
-    CompareSwap = 0x13,
-    FetchAdd = 0x14,
-    Resync = 0x15,
-    SendLastWithInvalidate = 0x16,
-    SendOnlyWithInvalidate = 0x17,
-}
 
 /// The hardware queue pair context
 #[derive(Debug)]
@@ -51,6 +20,7 @@ pub(super) struct QueuePairInner {
     pub(super) pmtu: Pmtu,
     pub(super) qp_type: QpType,
     pub(super) qp_access_flags: MemAccessTypeFlag,
+    pub(super) peer_qp: Qpn,
     pub(super) pdkey: PDHandle,
 }
 
@@ -203,8 +173,8 @@ impl ExpectedPsnContextEntry {
     }
 }
 
-// /// do zero field check and pad count check
-fn header_pre_check(data: &[u8]) -> bool {
+// /// do bth zero field check and pad count check
+pub(super) fn header_pre_check(data: &[u8]) -> bool {
     let bth = BTH::from_bytes(data);
     let zero_fields_check = (bth.get_tver() == 0)
         && (bth.get_becn() == 0)
@@ -226,9 +196,8 @@ fn header_pre_check(data: &[u8]) -> bool {
         | RdmaOpCode::RdmaWriteMiddle
         | RdmaOpCode::RdmaReadRequest
         | RdmaOpCode::CompareSwap
-        | RdmaOpCode::FetchAdd => {
-            return bth.get_pad_cnt() == 0;
-        }
+        | RdmaOpCode::FetchAdd => bth.get_pad_cnt() == 0,
+
         RdmaOpCode::SendFirst
         | RdmaOpCode::SendLast
         | RdmaOpCode::SendOnly
@@ -240,15 +209,44 @@ fn header_pre_check(data: &[u8]) -> bool {
         | RdmaOpCode::RdmaWriteLast
         | RdmaOpCode::RdmaWriteOnly
         | RdmaOpCode::RdmaWriteLastWithImmediate
-        | RdmaOpCode::RdmaWriteOnlyWithImmediate => {
-            return true;
-        }
+        | RdmaOpCode::RdmaWriteOnlyWithImmediate => true,
 
-        _ => {
-            return false;
-        }
+        _ => false,
     }
 }
+
+pub(super) fn check_opcode_supported(qp_type: &QpType, opcode: &RdmaOpCode) -> bool {
+    match qp_type {
+        QpType::Rc => match opcode {
+            RdmaOpCode::SendFirst
+            | RdmaOpCode::SendMiddle
+            | RdmaOpCode::SendLast
+            | RdmaOpCode::SendLastWithImmediate
+            | RdmaOpCode::SendOnly
+            | RdmaOpCode::SendOnlyWithImmediate
+            | RdmaOpCode::SendLastWithInvalidate
+            | RdmaOpCode::SendOnlyWithInvalidate
+            | RdmaOpCode::RdmaWriteFirst
+            | RdmaOpCode::RdmaWriteMiddle
+            | RdmaOpCode::RdmaWriteLast
+            | RdmaOpCode::RdmaWriteLastWithImmediate
+            | RdmaOpCode::RdmaWriteOnly
+            | RdmaOpCode::RdmaWriteOnlyWithImmediate
+            | RdmaOpCode::RdmaReadRequest
+            | RdmaOpCode::RdmaReadResponseFirst
+            | RdmaOpCode::RdmaReadResponseMiddle
+            | RdmaOpCode::RdmaReadResponseLast
+            | RdmaOpCode::RdmaReadResponseOnly
+            | RdmaOpCode::Acknowledge
+            | RdmaOpCode::AtomicAcknowledge
+            | RdmaOpCode::CompareSwap
+            | RdmaOpCode::FetchAdd => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

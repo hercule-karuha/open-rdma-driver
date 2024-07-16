@@ -24,6 +24,7 @@ mod net_agent;
 mod packet;
 mod packet_processor;
 mod hardware_simulate;
+mod auto_ack;
 #[cfg(test)]
 pub(crate) mod tests;
 mod types;

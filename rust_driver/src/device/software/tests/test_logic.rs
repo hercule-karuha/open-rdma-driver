@@ -8,9 +8,9 @@ use crate::{
             logic::BlueRDMALogic,
             net_agent::{NetAgentError, NetSendAgent},
             tests::{SGListBuilder, ToCardWorkRbDescBuilder},
-            types::{Metadata, PayloadInfo, RdmaMessage},
+            types::{Metadata, PayloadInfo, RdmaMessage, RdmaOpCode},
         },
-        ToCardWorkRbDescOpcode, ToHostWorkRbDescOpcode,
+        ToCardWorkRbDescOpcode,
     },
     types::{Pmtu, QpType},
 };
@@ -71,10 +71,7 @@ fn test_logic_send() {
         logic.send(desc).unwrap();
         assert_eq!(agent.message.borrow().len(), 1);
         let message = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteOnly
-        );
+        assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaWriteOnly);
         assert_eq!(message.payload.get_length(), 512);
         assert_eq!(message.payload.get_sg_list()[0].data as u64, 0x1000);
     }
@@ -99,16 +96,10 @@ fn test_logic_send() {
         logic.send(desc).unwrap();
         assert_eq!(agent.message.borrow().len(), 2);
         let message1 = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message1.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteFirst
-        );
+        assert_eq!(message1.meta_data.get_opcode(), RdmaOpCode::RdmaWriteFirst);
         assert_eq!(message1.payload.get_length(), 512);
         let message2 = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message2.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteLast
-        );
+        assert_eq!(message2.meta_data.get_opcode(), RdmaOpCode::RdmaWriteLast);
         assert_eq!(message2.payload.get_length(), 512);
     }
 
@@ -133,31 +124,31 @@ fn test_logic_send() {
         let message_first = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_first.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteFirst
+            RdmaOpCode::RdmaWriteFirst
         );
         assert_eq!(message_first.payload.get_length(), 1);
         let message_middle = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_middle.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteMiddle
+            RdmaOpCode::RdmaWriteMiddle
         );
         assert_eq!(message_middle.payload.get_length(), 1024);
         let message_middle = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_middle.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteMiddle
+            RdmaOpCode::RdmaWriteMiddle
         );
         assert_eq!(message_middle.payload.get_length(), 1024);
         let message_middle = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_middle.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteMiddle
+            RdmaOpCode::RdmaWriteMiddle
         );
         assert_eq!(message_middle.payload.get_length(), 1024);
         let message_last = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_last.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteLast
+            RdmaOpCode::RdmaWriteLast
         );
         assert_eq!(message_last.payload.get_length(), 1023);
     }
@@ -183,14 +174,14 @@ fn test_logic_send() {
         let message_first = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_first.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaReadResponseFirst
+            RdmaOpCode::RdmaReadResponseFirst
         );
         assert_eq!(message_first.payload.get_length(), 1);
         let psn1 = message_first.meta_data.common_meta().psn;
         let message_middle = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_middle.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+            RdmaOpCode::RdmaReadResponseMiddle
         );
         assert_eq!(message_middle.payload.get_length(), 1024);
         let psn2 = message_middle.meta_data.common_meta().psn;
@@ -198,7 +189,7 @@ fn test_logic_send() {
         let message_middle = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_middle.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+            RdmaOpCode::RdmaReadResponseMiddle
         );
         assert_eq!(message_middle.payload.get_length(), 1024);
         let psn3 = message_middle.meta_data.common_meta().psn;
@@ -206,7 +197,7 @@ fn test_logic_send() {
         let message_middle = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_middle.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+            RdmaOpCode::RdmaReadResponseMiddle
         );
         assert_eq!(message_middle.payload.get_length(), 1024);
         let psn4 = message_middle.meta_data.common_meta().psn;
@@ -214,7 +205,7 @@ fn test_logic_send() {
         let message_last = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message_last.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaReadResponseLast
+            RdmaOpCode::RdmaReadResponseLast
         );
         assert_eq!(message_last.payload.get_length(), 1023);
     }
@@ -241,7 +232,7 @@ fn test_logic_send() {
         let message = agent.message.borrow_mut().pop_front().unwrap();
         assert_eq!(
             message.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate
+            RdmaOpCode::RdmaWriteOnlyWithImmediate
         );
         match message.meta_data {
             Metadata::General(meta) => {
@@ -270,10 +261,7 @@ fn test_logic_send() {
         logic.send(desc).unwrap();
         assert_eq!(agent.message.borrow().len(), 1);
         let message = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaReadRequest
-        );
+        assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaReadRequest);
         match message.meta_data {
             Metadata::General(meta) => {
                 assert_eq!(meta.reth.va, 0);
@@ -325,10 +313,7 @@ fn test_logic_send() {
         assert_eq!(agent.message.borrow().len(), 16);
 
         let message = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteFirst
-        );
+        assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaWriteFirst);
         assert_eq!(message.payload.get_length(), 4096);
         let meta = match message.meta_data {
             Metadata::General(meta) => meta,
@@ -340,19 +325,13 @@ fn test_logic_send() {
         assert_eq!(meta.reth.rkey.get(), 1234);
         for i in 1..15 {
             let message = agent.message.borrow_mut().pop_front().unwrap();
-            assert_eq!(
-                message.meta_data.get_opcode(),
-                ToHostWorkRbDescOpcode::RdmaWriteMiddle
-            );
+            assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaWriteMiddle);
             assert_eq!(message.meta_data.common_meta().psn.get(), i,);
             assert_eq!(message.payload.get_length(), 4096);
         }
 
         let message = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteLast
-        );
+        assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaWriteLast);
         assert_eq!(message.meta_data.common_meta().psn.get(), 15,);
         assert_eq!(message.payload.get_length(), 1024 * 4);
     }
@@ -388,10 +367,7 @@ fn test_logic_send() {
         logic.send(desc2).unwrap();
         assert_eq!(agent.message.borrow().len(), 9);
         let message = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteFirst
-        );
+        assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaWriteFirst);
         assert_eq!(message.meta_data.common_meta().psn.get(), 0,);
         assert_eq!(message.payload.get_length(), 1024);
         let meta = match message.meta_data {
@@ -403,19 +379,13 @@ fn test_logic_send() {
         assert_eq!(meta.reth.rkey.get(), 1234);
         for i in 1..8 {
             let message = agent.message.borrow_mut().pop_front().unwrap();
-            assert_eq!(
-                message.meta_data.get_opcode(),
-                ToHostWorkRbDescOpcode::RdmaWriteMiddle
-            );
+            assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaWriteMiddle);
             assert_eq!(message.meta_data.common_meta().psn.get(), i,);
             assert_eq!(message.payload.get_length(), 4096);
         }
 
         let message = agent.message.borrow_mut().pop_front().unwrap();
-        assert_eq!(
-            message.meta_data.get_opcode(),
-            ToHostWorkRbDescOpcode::RdmaWriteLast
-        );
+        assert_eq!(message.meta_data.get_opcode(), RdmaOpCode::RdmaWriteLast);
         assert_eq!(message.meta_data.common_meta().psn.get(), 8);
         assert_eq!(message.payload.get_length(), 1024 * 4);
     }
