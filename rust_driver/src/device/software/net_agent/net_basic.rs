@@ -1,16 +1,9 @@
-use std::{fmt::Debug, net::Ipv4Addr};
+use super::super::packet::PacketError;
+use super::super::packet_processor::PacketProcessorError;
 
-use thiserror::Error;
-
-use super::{
-    packet::PacketError,
-    packet_processor::PacketProcessorError,
-    types::{PayloadInfo, RdmaMessage},
-};
+use std::fmt::Debug;
 use std::io;
-
-mod pnet_agent;
-pub(crate) mod udp_agent;
+use thiserror::Error;
 
 pub(crate) trait NetReceiveLogic<'a>: Send + Sync + Debug {
     fn recv(&self, data: &[u8]);
@@ -18,19 +11,7 @@ pub(crate) trait NetReceiveLogic<'a>: Send + Sync + Debug {
 }
 
 pub(crate) trait NetSendAgent: Debug {
-    fn send(
-        &self,
-        dest_addr: Ipv4Addr,
-        dest_port: u16,
-        message: &RdmaMessage,
-    ) -> Result<(), NetAgentError>;
-
-    fn send_raw(
-        &self,
-        dest_addr: Ipv4Addr,
-        dest_port: u16,
-        payload: &PayloadInfo,
-    ) -> Result<(), NetAgentError>;
+    fn send(&self, data: &[u8]) -> Result<(), NetAgentError>;
 }
 
 #[derive(Error, Debug)]

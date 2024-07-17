@@ -3,7 +3,7 @@ use crate::{
         types::ToHostWorkRbDescWriteType, DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
         ToCardWorkRbDescOpcode, ToHostWorkRbDescAethCode, ToHostWorkRbDescTransType,
     },
-    types::{MemAccessTypeFlag, Psn, QpType},
+    types::{MemAccessTypeFlag, QpType},
 };
 
 use super::{
@@ -12,6 +12,8 @@ use super::{
 };
 
 use num_enum::TryFromPrimitive;
+
+const PSN_MAX_WINDOW_SIZE: u32 = 1 << 23_i32;
 
 #[derive(TryFromPrimitive, PartialEq, Eq, Debug, Clone)]
 #[repr(u8)]
@@ -79,7 +81,7 @@ impl RdmaOpCode {
             _ => false,
         }
     }
-    
+
     pub(crate) fn is_last(&self) -> bool {
         match self {
             RdmaOpCode::SendLast
@@ -91,7 +93,7 @@ impl RdmaOpCode {
             _ => false,
         }
     }
-    
+
     pub(crate) fn is_only(&self) -> bool {
         match self {
             RdmaOpCode::SendOnly
@@ -162,18 +164,87 @@ impl RdmaReqStatus {
     }
 }
 
-
-/// Queue-pair number
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct Qpn(u32);
+/// Queue Pair Number
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
+pub(super) struct Qpn(u32);
 
 impl Qpn {
-    pub(crate) fn new(qpn: u32) -> Self {
-        Qpn(qpn)
+    const WIDTH_IN_BITS: usize = 24;
+    const MASK: u32 = u32::MAX >> (32 - Self::WIDTH_IN_BITS);
+
+    /// The `QPN` value should be less than 2^24;
+    pub(super) fn new(qpn: u32) -> Self {
+        assert!(qpn <= Self::MASK, "QPN should not exceed 24 bits");
+        Self(qpn)
     }
 
-    pub(crate) fn get(self) -> u32 {
+    /// Get the value of `Qpn`.
+    pub(super) fn get(&self) -> u32 {
         self.0
+    }
+
+    /// Convert the value of `qpn` to net endian.
+    pub(super) fn to_idx(&self) -> usize {
+        self.0 as usize
+    }
+
+    /// Convert the value of `qpn` to net endian.
+    pub(super) fn into_ne(self) -> u32 {
+        let key = self.0.to_ne_bytes();
+        u32::from_le_bytes([key[2], key[1], key[0], 0])
+    }
+}
+
+/// In RDMA spec, some structs are defined as 24 bits.
+/// For example : `PSN`, `QPN` etc.
+///
+/// This struct is used to represent these 24 bits.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
+pub(super) struct Psn(u32);
+
+impl Psn {
+    const WIDTH_IN_BITS: usize = 24;
+    const MASK: u32 = u32::MAX >> (32 - Self::WIDTH_IN_BITS);
+    const MAX_PSN_RANGE: u32 = 1 << 23_i32;
+
+    /// Create a new `Psn` with the given value.
+    ///
+    /// # Panics
+    /// If the value is greater than 24 bits, it will panic.
+    #[must_use]
+    pub(super) fn new(psn: u32) -> Self {
+        assert!(psn <= Self::MASK, "PSN should not exceed 24 bits");
+        Self(psn)
+    }
+
+    /// Get the value of `psn`.
+    #[must_use]
+    pub(super) fn get(&self) -> u32 {
+        self.0
+    }
+
+    /// Convert the value of `psn` to net endian.
+    pub(crate) fn into_ne(self) -> u32 {
+        let key = self.0.to_ne_bytes();
+        u32::from_le_bytes([key[2], key[1], key[0], 0])
+    }
+
+    /// wrapping add the current value with rhs
+    pub(crate) fn wrapping_add(self, rhs: u32) -> Self {
+        // since (a+b) mod p  = (a + (b mod p)) mod p, we don't have to let rhs= rhs%p here
+        Self(self.0.wrapping_add(rhs) & Self::MASK)
+    }
+
+    /// Get the difference between two PSN
+    pub(crate) fn wrapping_sub(self, rhs: u32) -> u32 {
+        self.0.wrapping_sub(rhs) & Self::MASK
+    }
+
+    /// Check if the current PSN is larger or equal to the PSN in the argument
+    pub(crate) fn larger_in_psn(&self, rhs: Psn) -> bool {
+        let diff = self.wrapping_sub(rhs.0);
+        // if diff < 2^23, then self is larger or equal to rhs
+        diff < PSN_MAX_WINDOW_SIZE
     }
 }
 
@@ -379,7 +450,7 @@ impl From<&RETH> for RethHeader {
         }
     }
 }
- 
+
 #[derive(Debug, Clone)]
 pub(crate) struct RdmaMessageMetaCommon {
     pub(crate) tran_type: ToHostWorkRbDescTransType,

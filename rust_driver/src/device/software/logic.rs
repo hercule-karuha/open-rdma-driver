@@ -9,7 +9,7 @@ use crate::{
         ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         ToHostWorkRbDescWriteWithImm,
     },
-    types::{MemAccessTypeFlag, Msn, Pmtu, Psn, QpType},
+    types::{MemAccessTypeFlag, Msn, Pmtu, QpType},
     utils::get_first_packet_max_length,
 };
 
@@ -17,8 +17,9 @@ use super::{
     hardware_simulate::*,
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
     packet_processor::PacketProcessor,
+    qp_table::{self, *},
     types::{
-        Key, Metadata, PDHandle, PKey, PayloadInfo, Qpn, RdmaGeneralMeta, RdmaMessage,
+        Key, Metadata, PDHandle, PKey, PayloadInfo, Psn, Qpn, RdmaGeneralMeta, RdmaMessage,
         RdmaMessageMetaCommon, RdmaOpCode, RdmaReqStatus, RethHeader, ToCardDescriptor,
         ToCardReadDescriptor, ToCardWriteDescriptor,
     },
@@ -38,9 +39,8 @@ const MAX_QP: usize = 8;
 #[derive(Debug)]
 pub(crate) struct BlueRDMALogic {
     mr_rkey_table: RwLock<HashMap<Key, Arc<RwLock<MemoryRegion>>>>,
-    qp_table: RwLock<HashMap<Qpn, Arc<QueuePair>>>,
+    qp_table: Arc<RwLock<QpTable>>,
     raw_pkt_config: RawPktConfig,
-    expected_psn_manager: Arc<RwLock<ExpectedPsnManager>>,
     net_send_agent: Arc<dyn NetSendAgent>,
     to_host_data_descriptor_queue: Sender<ToHostWorkRbDesc>,
     to_host_ctrl_descriptor_queue: Sender<ToHostCtrlRbDesc>,
@@ -72,9 +72,8 @@ impl BlueRDMALogic {
     ) -> Self {
         BlueRDMALogic {
             mr_rkey_table: RwLock::new(HashMap::new()),
-            qp_table: RwLock::new(HashMap::new()),
+            qp_table: Arc::new(RwLock::new(QpTable::new(MAX_QP))),
             raw_pkt_config: RawPktConfig::new(),
-            expected_psn_manager: Arc::new(RwLock::new(ExpectedPsnManager::new(MAX_QP))),
             net_send_agent: net_sender,
             to_host_data_descriptor_queue: work_sender,
             to_host_ctrl_descriptor_queue: ctrl_sender,
@@ -232,7 +231,7 @@ impl BlueRDMALogic {
                     let middle_payload = req.sg_list.cut(pmtu)?;
                     meta_data.common_meta.opcode = req.write_middle_opcode();
                     meta_data.reth.va = cur_va;
-                    meta_data.common_meta.psn = psn;
+                    meta_data.common_meta.psn = Psn::new(psn.get());
                     let middle_msg = RdmaMessage {
                         meta_data: Metadata::General(meta_data.clone()),
                         payload: middle_payload,
@@ -250,7 +249,7 @@ impl BlueRDMALogic {
                 // The last packet may be with immediate data
                 let (opcode, imm) = req.write_last_opcode_with_imm();
                 meta_data.common_meta.opcode = opcode;
-                meta_data.common_meta.psn = psn;
+                meta_data.common_meta.psn = Psn::new(psn.get());
                 meta_data.imm = imm;
                 meta_data.reth.va = cur_va;
                 meta_data.reth.len = cur_len;
@@ -275,37 +274,21 @@ impl BlueRDMALogic {
             ToCardCtrlRbDesc::QpManagement(desc) => {
                 let mut qp_table = self.qp_table.write()?;
                 let qpn = Qpn::new(desc.qpn.get());
-                let qp_inner = QueuePairInner {
+                let qp_context = QpContext {
                     pmtu: desc.pmtu,
                     qp_type: desc.qp_type,
                     qp_access_flags: desc.rq_acc_flags,
-                    peer_qp: desc.peer_qpn,
+                    // TODO: change to same Qpn
+                    peer_qp: Qpn::new(desc.peer_qpn.get()),
                     pdkey: PDHandle::new(desc.pd_hdl),
                 };
                 let is_success = if desc.is_valid {
                     // create
-                    let _result = qp_table
-                        .entry(qpn)
-                        .and_modify(|existing_qp| {
-                            *existing_qp = Arc::new(QueuePair {
-                                inner: qp_inner.clone(),
-                            });
-                        })
-                        .or_insert(Arc::new(QueuePair { inner: qp_inner }));
-                    true
+                    qp_table.set_qp(qpn, qp_context)
                 } else {
                     // delete
-                    if qp_table.get(&qpn).is_some() {
-                        // exist
-                        let _: Option<Arc<QueuePair>> = qp_table.remove(&qpn);
-                        true
-                    } else {
-                        false
-                    }
+                    qp_table.reset_qp(qpn)
                 };
-                let mut locked_manager = self.expected_psn_manager.write()?;
-                let qpn_idx = desc.qpn.get() as usize;
-                locked_manager.reset_psn(qpn_idx);
                 (desc.common.op_id, is_success)
             }
             ToCardCtrlRbDesc::UpdateMrTable(desc) => {
@@ -336,10 +319,11 @@ impl BlueRDMALogic {
                 (desc.common.op_id, true)
             }
             ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => {
-                let mut locked_manager = self.expected_psn_manager.write()?;
-                let qpn_idx = desc.qpn.get() as usize;
-                locked_manager.recovery_qp(qpn_idx, desc.recover_psn);
-                (desc.common.op_id, true)
+                let mut locked_table = self.qp_table.write()?;
+                let qpn = Qpn::new(desc.qpn.get());
+                let recovery_success = locked_table
+                    .recovery_qp(Qpn::new(desc.qpn.get()), Psn::new(desc.recover_psn.get()));
+                (desc.common.op_id, recovery_success)
             }
             // Userspace types use virtual address directly
             ToCardCtrlRbDesc::UpdatePageTable(desc) => (desc.common.op_id, true),
@@ -371,18 +355,19 @@ impl BlueRDMALogic {
                 let opcode = &common_meta.common_meta.opcode;
                 let needed_permissions = common_meta.needed_permissions();
                 let qp_table = self.qp_table.read()?;
-                let Some(qp_entry) = qp_table.get(&common_meta.common_meta.dqpn) else {
+                let Some(qp_entry) = qp_table.get_qp_context(common_meta.common_meta.dqpn.clone())
+                else {
                     return Ok(RdmaReqStatus::RdmaReqStInvHeader);
                 };
 
-                if !check_opcode_supported(&qp_entry.inner.qp_type, opcode) {
+                if !check_opcode_supported(&qp_entry.qp_type, opcode) {
                     return Ok(RdmaReqStatus::RdmaReqStInvOpcode);
                 }
-                if !qp_entry.inner.qp_access_flags.contains(needed_permissions) {
+                if !qp_entry.qp_access_flags.contains(needed_permissions) {
                     return Ok(RdmaReqStatus::RdmaReqStInvAccFlag);
                 }
 
-                let pmtu = u64::from(&qp_entry.inner.pmtu);
+                let pmtu = u64::from(&qp_entry.pmtu);
                 let is_first_mid = opcode.is_first() || opcode.is_middle();
                 let is_mid = opcode.is_middle();
                 let is_last_only = opcode.is_last() || opcode.is_only();
@@ -460,12 +445,12 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
         let meta = &message.meta_data;
         match meta {
             Metadata::General(general_meta) => {
-                let Ok(mut expected_psn_manager) = self.expected_psn_manager.write() else {
-                    log::error!("Failed to lock the rkey");
+                let Ok(mut expected_psn_manager) = self.qp_table.write() else {
+                    log::error!("Failed to lock the qp table");
                     return;
                 };
 
-                let qpn_idx = general_meta.common_meta.dqpn.get() as usize;
+                let qpn_idx = Qpn::new(general_meta.common_meta.dqpn.get());
                 let continous_resp = expected_psn_manager.check_continous(
                     qpn_idx,
                     general_meta.common_meta.psn,
@@ -567,11 +552,10 @@ mod tests {
             logic.update(desc).unwrap();
             {
                 let guard = logic.qp_table.read().unwrap();
-                let qp_context = guard.get(&Qpn::new(1234)).unwrap();
-                let inner = &qp_context.inner;
-                assert!(matches!(inner.pmtu, Pmtu::Mtu1024));
-                assert!(matches!(inner.qp_type, QpType::Rc));
-                assert!(inner
+                let qp_context = guard.get_qp_context(Qpn::new(1234)).unwrap();
+                assert!(matches!(qp_context.pmtu, Pmtu::Mtu1024));
+                assert!(matches!(qp_context.qp_type, QpType::Rc));
+                assert!(qp_context
                     .qp_access_flags
                     .contains(MemAccessTypeFlag::IbvAccessRemoteWrite));
             }
@@ -590,11 +574,10 @@ mod tests {
             logic.update(desc).unwrap();
             {
                 let guard = logic.qp_table.read().unwrap();
-                let qp_context = guard.get(&Qpn::new(1234)).unwrap();
-                let inner = &qp_context.inner;
-                assert!(matches!(inner.pmtu, Pmtu::Mtu2048));
-                assert!(matches!(inner.qp_type, QpType::Rc));
-                assert!(inner
+                let qp_context = guard.get_qp_context(Qpn::new(1234)).unwrap();
+                assert!(matches!(qp_context.pmtu, Pmtu::Mtu2048));
+                assert!(matches!(qp_context.qp_type, QpType::Rc));
+                assert!(qp_context
                     .qp_access_flags
                     .contains(MemAccessTypeFlag::IbvAccessRemoteWrite));
             }

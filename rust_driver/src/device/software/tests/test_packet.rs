@@ -9,14 +9,14 @@ use crate::device::software::types::Key;
 use crate::device::software::types::Metadata;
 use crate::device::software::types::PKey;
 use crate::device::software::types::PayloadInfo;
+use crate::device::software::types::Psn;
 use crate::device::software::types::Qpn;
 use crate::device::software::types::RdmaGeneralMeta;
 use crate::device::software::types::RdmaMessage;
 use crate::device::software::types::RdmaMessageMetaCommon;
-use crate::device::software::types::RethHeader;
 use crate::device::software::types::RdmaOpCode;
+use crate::device::software::types::RethHeader;
 use crate::device::ToHostWorkRbDescTransType;
-use crate::types::Psn;
 
 const BTH_SIZE: usize = size_of::<BTH>();
 const RETH_SIZE: usize = size_of::<RETH>();
@@ -285,10 +285,7 @@ fn test_pkt_processor_to_buf() {
     assert!(size == BTH_SIZE + RETH_SIZE);
     // read bth
     let bth = BTH::from_bytes(&buf);
-    assert_eq!(
-        bth.get_opcode(),
-        RdmaOpCode::RdmaWriteFirst as u8
-    );
+    assert_eq!(bth.get_opcode(), RdmaOpCode::RdmaWriteFirst as u8);
     assert_eq!(bth.get_destination_qpn(), 3);
     assert_eq!(bth.get_psn(), 0x123456);
     assert!(!bth.get_ack_req());
