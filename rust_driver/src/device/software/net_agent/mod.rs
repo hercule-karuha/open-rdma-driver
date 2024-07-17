@@ -9,7 +9,6 @@ use super::{
 };
 use std::io;
 
-mod pnet_agent;
 pub(crate) mod udp_agent;
 
 pub(crate) trait NetReceiveLogic<'a>: Send + Sync + Debug {

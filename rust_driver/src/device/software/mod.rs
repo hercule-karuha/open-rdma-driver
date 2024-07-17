@@ -26,6 +26,7 @@ mod packet_processor;
 mod hardware_simulate;
 mod qp_table;
 mod auto_ack;
+mod header_check;
 #[cfg(test)]
 pub(crate) mod tests;
 mod types;

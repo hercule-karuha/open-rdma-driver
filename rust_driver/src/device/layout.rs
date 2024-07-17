@@ -411,15 +411,19 @@ bitfield! {
     /// BTH layout
     pub struct Bth([u8]);
     u32;
-    pub get_opcode,set_opcode: 7, 0;         // 8bits
-    _padding_0,_ : 9, 8;                 // 2bits
-    pub get_pad_count,set_pad_count: 11, 10; // 2bits
-    _padding_1,_ : 15, 12;               // 4bits
-    pub get_pkey,set_pkey: 31, 16;           // 16bits
-    pub _,set_ecn_and_resv6: 39, 32;         // 8bits
-    pub get_dqpn,set_dqpn: 63, 40;           // 24bits
-    _padding_2,_ : 71, 64;               // 8bits
-    pub get_psn,set_psn: 95, 72;             // 24bits
+    pub get_opcode, set_opcode: 7, 0;         // 8bits
+    pub get_solicited, _: 8;                  // 1bit
+    pub get_mig_req, _: 9;                    // 1bit
+    pub get_pad_count, set_pad_count: 11, 10; // 2bits
+    pub get_tver, _ :15, 12;                 // 4bits
+    pub get_pkey, set_pkey: 31, 16;           // 16bits
+    pub get_fecn, set_fecn: 32;                      // 1bit
+    pub get_becn, set_becn :33;                      // 1bit
+    pub get_resv6, set_resv6: 39, 34;         // 8bits
+    pub get_dqpn, set_dqpn: 63, 40;           // 24bits
+    pub get_ack_req, set_ack_req: 64;         // 1bit
+    pub get_resv7, _ :71, 65;                 // 7bit
+    pub get_psn,set_psn: 95, 72;              // 24bits
 }
 
 bitfield! {

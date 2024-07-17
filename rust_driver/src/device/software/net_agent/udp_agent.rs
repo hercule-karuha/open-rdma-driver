@@ -84,7 +84,6 @@ impl UDPReceiveAgent {
     ) -> Result<Self, NetAgentError> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
-
         let socket = Socket::new(Domain::PACKET, Type::RAW, Some(Protocol::UDP))?;
         let addr = SocketAddrV4::new(addr, port);
         socket.bind(&addr.into())?;

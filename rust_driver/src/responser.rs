@@ -224,7 +224,9 @@ fn write_packet(
     bth_header.set_opcode(ToHostWorkRbDescOpcode::Acknowledge as u32);
     bth_header.set_pad_count(0);
     bth_header.set_pkey(0);
-    bth_header.set_ecn_and_resv6(0);
+    bth_header.set_becn(false);
+    bth_header.set_fecn(false);
+    bth_header.set_resv6(0);
 
     bth_header.set_dqpn(dpqn.into_be());
     bth_header.set_psn(psn.into_be());
@@ -312,7 +314,9 @@ fn calculate_icrc(data: &[u8]) -> u32 {
     udp_header.set_checksum(0xffff);
 
     let mut bth_header = Bth(&mut buf[IPV4_HEADER_SIZE + UDP_HEADER_SIZE..]);
-    bth_header.set_ecn_and_resv6(0xff);
+    bth_header.set_becn(true);
+    bth_header.set_fecn(true);
+    bth_header.set_resv6(0x3F);
 
     hasher.update(&buf);
     // the rest of header and payload

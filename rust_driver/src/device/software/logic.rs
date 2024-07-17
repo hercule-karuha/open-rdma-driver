@@ -451,16 +451,25 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 };
 
                 let qpn_idx = Qpn::new(general_meta.common_meta.dqpn.get());
-                let continous_resp = expected_psn_manager.check_continous(
+                let continous_resp = match expected_psn_manager.check_continous(
                     qpn_idx,
                     general_meta.common_meta.psn,
                     !req_status.is_nromal(),
-                );
-
+                ) {
+                    Some(resp) => resp,
+                    None => {
+                        return;
+                    }
+                };
                 let va = general_meta.reth.va;
                 if req_status.is_nromal() && general_meta.has_payload() {
                     message.payload.copy_to(va as *mut u8);
                 }
+
+                let need_report = !(continous_resp.is_adjacent_psn_continous
+                    && general_meta.common_meta.opcode.is_middle());
+                let need_gen_ack =
+                    continous_resp.is_qp_psn_continous && general_meta.common_meta.ack_req;
             }
             Metadata::Acknowledge(_) => todo!(),
         }

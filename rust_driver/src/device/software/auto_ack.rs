@@ -1,4 +1,4 @@
-use super::packet::{AETH, BTH, RDMA_DEFAULT_PORT};
+use super::packet::RDMA_DEFAULT_PORT;
 use super::types::RdmaOpCode;
 use crate::device::layout::{Aeth, Bth, NReth};
 use crate::device::ToHostWorkRbDescTransType;
@@ -84,7 +84,9 @@ pub(super) fn write_auto_ack(
     bth.set_opcode(RdmaOpCode::Acknowledge as u32);
     bth.set_pad_count(0);
     bth.set_pkey(0);
-    bth.set_ecn_and_resv6(0);
+    bth.set_becn(false);
+    bth.set_fecn(false);
+    bth.set_resv6(0);
     bth.set_dqpn(peer_qp.get());
     bth.set_psn(expected_psn.get());
 
