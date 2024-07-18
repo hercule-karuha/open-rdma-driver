@@ -2,7 +2,21 @@
 use std::{mem::size_of, ptr};
 
 // Using the `#!` to suppress the warning of `clippy::indexing_slicing` in the generated code.
+use pnet::packet::ethernet::EthernetPacket;
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::udp::UdpPacket;
+
 use bitfield::{bitfield, BitRange, BitRangeMut};
+
+pub(crate) const MAC_HEADER_SIZE: usize = EthernetPacket::minimum_packet_size();
+pub(crate) const IPV4_HEADER_SIZE: usize = Ipv4Packet::minimum_packet_size();
+pub(crate) const UDP_HEADER_SIZE: usize = UdpPacket::minimum_packet_size();
+pub(crate) const NET_WORK_HEADER_SIZE: usize = MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE;
+
+pub(crate) const BTH_HEADER_SIZE: usize = 12;
+pub(crate) const AETH_HEADER_SIZE: usize = 4;
+pub(crate) const NRETH_HEADER_SIZE: usize = 4;
+pub(crate) const ICRC_SIZE: usize = 4;
 
 
 bitfield! {

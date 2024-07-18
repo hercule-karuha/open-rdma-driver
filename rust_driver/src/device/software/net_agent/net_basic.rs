@@ -11,7 +11,7 @@ pub(crate) trait NetReceiveLogic<'a>: Send + Sync + Debug {
 }
 
 pub(crate) trait NetSendAgent: Debug {
-    fn send(&self, data: &[u8]) -> Result<(), NetAgentError>;
+    fn send(&self, data: &[u8], length: usize) -> Result<(), NetAgentError>;
 }
 
 #[derive(Error, Debug)]

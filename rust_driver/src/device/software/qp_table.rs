@@ -43,9 +43,9 @@ impl QpContext {
 
 #[derive(Debug, Clone)]
 pub(super) struct ExpectedPsnContext {
-    pub(super) expected_psn: Psn,
-    pub(super) latest_error_psn: Psn,
-    pub(super) is_qp_psn_continous: bool,
+    expected_psn: Psn,
+    latest_error_psn: Psn,
+    is_qp_psn_continous: bool,
 }
 
 impl ExpectedPsnContext {

@@ -1,10 +1,7 @@
 use std::{
     error::Error,
     net::Ipv4Addr,
-    sync::{
-        atomic::AtomicBool,
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
 };
 
 use flume::{unbounded, Receiver};
@@ -12,21 +9,20 @@ use log::debug;
 
 use crate::SchedulerStrategy;
 
-use self::net_agent::udp_agent::{UDPReceiveAgent, UDPSendAgent};
+use self::net_agent::{RawSockRecvAgent, RawSockSendAgent};
 
 use super::{
     scheduler::DescriptorScheduler, DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb,
     ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
 };
 
+mod auto_ack;
+mod header_check;
 mod logic;
 mod net_agent;
 mod packet;
 mod packet_processor;
-mod hardware_simulate;
 mod qp_table;
-mod auto_ack;
-mod header_check;
 #[cfg(test)]
 pub(crate) mod tests;
 mod types;
@@ -37,7 +33,7 @@ pub(crate) use logic::BlueRDMALogic;
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct SoftwareDevice<Strat: SchedulerStrategy> {
-    recv_agent: UDPReceiveAgent,
+    recv_agent: RawSockRecvAgent,
     device: Arc<BlueRDMALogic>,
     stop_flag: Arc<AtomicBool>,
     to_card_work_rb: ToCardWorkRb<Strat>,
@@ -56,8 +52,13 @@ struct ToHostCtrlRb(Receiver<ToHostCtrlRbDesc>);
 
 impl<Strat: SchedulerStrategy> SoftwareDevice<Strat> {
     /// Initializing an software device.
-    pub(crate) fn new(addr: Ipv4Addr, port: u16, strategy: Strat,scheduler_size:u32) -> Result<Self, Box<dyn Error>> {
-        let send_agent = UDPSendAgent::new(addr, port)?;
+    pub(crate) fn new(
+        addr: Ipv4Addr,
+        port: u16,
+        strategy: Strat,
+        scheduler_size: u32,
+    ) -> Result<Self, Box<dyn Error>> {
+        let send_agent = RawSockSendAgent::new()?;
         let (ctrl_sender, ctrl_receiver) = unbounded();
         let (work_sender, work_receiver) = unbounded();
         let device = Arc::new(BlueRDMALogic::new(
@@ -65,7 +66,7 @@ impl<Strat: SchedulerStrategy> SoftwareDevice<Strat> {
             ctrl_sender,
             work_sender,
         ));
-        let recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device), addr, port)?;
+        let recv_agent = RawSockRecvAgent::new(Arc::<BlueRDMALogic>::clone(&device))?;
 
         let this_device = Arc::<BlueRDMALogic>::clone(&device);
 
@@ -73,7 +74,7 @@ impl<Strat: SchedulerStrategy> SoftwareDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new_with_software(
             strategy,
             this_device,
-            scheduler_size
+            scheduler_size,
         ));
         let to_card_work_rb = ToCardWorkRb(scheduler);
         Ok(Self {

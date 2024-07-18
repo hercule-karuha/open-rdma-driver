@@ -30,13 +30,7 @@ impl DummpyProxy {
     }
 }
 impl NetSendAgent for DummpyProxy {
-    fn send(&self, _: Ipv4Addr, _: u16, message: &RdmaMessage) -> Result<(), NetAgentError> {
-        self.message.borrow_mut().push_back(message.clone());
-        Ok(())
-    }
-
-    fn send_raw(&self, _: Ipv4Addr, _: u16, payload: &PayloadInfo) -> Result<(), NetAgentError> {
-        self.payload.borrow_mut().push_back(payload.clone());
+    fn send(&self, data: &[u8], length: usize) -> Result<(), NetAgentError> {
         Ok(())
     }
 }

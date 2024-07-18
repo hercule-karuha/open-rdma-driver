@@ -202,6 +202,8 @@ mod nic;
 mod retry;
 /// utility functions
 mod utils;
+/// use a separate moudle to save unsafe code
+mod unsafe_tools;
 
 /// unit test
 #[cfg(test)]

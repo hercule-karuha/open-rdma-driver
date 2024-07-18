@@ -12,7 +12,7 @@ use crate::device::ToHostWorkRbDescWriteType;
 use crate::device::{
     software::{
         logic::BlueRDMALogic,
-        net_agent::udp_agent::{UDPReceiveAgent, UDPSendAgent},
+        net_agent::{RawSockRecvAgent, RawSockSendAgent},
     },
     DeviceAdaptor, SoftwareDevice, ToCardWorkRbDescOpcode, ToHostWorkRbDesc,
 };

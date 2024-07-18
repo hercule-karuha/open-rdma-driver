@@ -1,6 +1,16 @@
-use flume::Sender;
-use thiserror::Error;
-
+use super::{
+    header_check::*,
+    net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent, NET_SERVER_BUF_SIZE},
+    packet::RDMA_DEFAULT_PORT,
+    packet_processor::{PacketProcessor, PacketWriter},
+    qp_table::*,
+    types::{
+        Key, Metadata, PDHandle, PKey, PayloadInfo, Psn, Qpn, RdmaGeneralMeta, RdmaMessage,
+        RdmaMessageMetaCommon, RdmaOpCode, RdmaReqStatus, RethHeader, ToCardDescriptor,
+        ToCardReadDescriptor, ToCardWriteDescriptor,
+    },
+};
+use crate::unsafe_tools::{get_raw_pkt_buf, RAW_PKT_BLOCK_SIZE, RAW_PKT_SLOT_NUM};
 use crate::{
     device::{
         CtrlRbDescOpcode, ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc,
@@ -12,24 +22,77 @@ use crate::{
     types::{MemAccessTypeFlag, Msn, Pmtu, QpType},
     utils::get_first_packet_max_length,
 };
+use eui48::MacAddress;
+use flume::Sender;
+use pnet::datalink::MacAddr;
+use thiserror::Error;
 
-use super::{
-    hardware_simulate::*,
-    net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
-    packet_processor::PacketProcessor,
-    qp_table::{self, *},
-    types::{
-        Key, Metadata, PDHandle, PKey, PayloadInfo, Psn, Qpn, RdmaGeneralMeta, RdmaMessage,
-        RdmaMessageMetaCommon, RdmaOpCode, RdmaReqStatus, RethHeader, ToCardDescriptor,
-        ToCardReadDescriptor, ToCardWriteDescriptor,
-    },
-};
 use std::{
     collections::HashMap,
+    net::Ipv4Addr,
+    sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, PoisonError, RwLock},
+    usize,
 };
 
 const MAX_QP: usize = 8;
+
+/// The hardware memory region context
+#[derive(Debug)]
+pub(super) struct MemoryRegion {
+    pub(super) key: Key,
+    pub(super) acc_flags: MemAccessTypeFlag,
+    pub(super) pdkey: PDHandle,
+    pub(super) addr: u64,
+    pub(super) len: usize,
+    pub(super) pgt_offset: u32,
+}
+// a buf divied into 4096 bytes slot to store raw packet
+#[derive(Debug)]
+pub(super) struct RawPktBuf {
+    buf_vec: Vec<[u8; RAW_PKT_BLOCK_SIZE]>,
+    buf_idx: usize,
+}
+
+impl RawPktBuf {
+    fn new() -> Self {
+        Self {
+            buf_vec: Vec::new(),
+            buf_idx: 0,
+        }
+    }
+
+    fn set_base_addr(&mut self, base_addr: u64) {
+        self.buf_vec = get_raw_pkt_buf(base_addr);
+    }
+
+    fn put_raw_pkt(&mut self, raw_packet: &[u8]) {
+        self.buf_vec[self.buf_idx].copy_from_slice(raw_packet);
+        self.buf_idx += 1;
+        if self.buf_idx == RAW_PKT_SLOT_NUM {
+            self.buf_idx = 0;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct NetworkParam {
+    pub(crate) gateway: Ipv4Addr,
+    pub(crate) netmask: Ipv4Addr,
+    pub(crate) ipaddr: Ipv4Addr,
+    pub(crate) macaddr: MacAddress,
+}
+
+impl NetworkParam {
+    fn new() -> Self {
+        Self {
+            gateway: Ipv4Addr::new(0, 0, 0, 0),
+            netmask: Ipv4Addr::new(0, 0, 0, 0),
+            ipaddr: Ipv4Addr::new(0, 0, 0, 0),
+            macaddr: MacAddress::new([0u8; 6]),
+        }
+    }
+}
 
 /// The simulating hardware logic of `BlueRDMA`
 ///
@@ -40,8 +103,9 @@ const MAX_QP: usize = 8;
 pub(crate) struct BlueRDMALogic {
     mr_rkey_table: RwLock<HashMap<Key, Arc<RwLock<MemoryRegion>>>>,
     qp_table: Arc<RwLock<QpTable>>,
-    raw_pkt_config: RawPktConfig,
+    raw_pkt_buf: RwLock<RawPktBuf>,
     net_send_agent: Arc<dyn NetSendAgent>,
+    net_param: RwLock<NetworkParam>,
     to_host_data_descriptor_queue: Sender<ToHostWorkRbDesc>,
     to_host_ctrl_descriptor_queue: Sender<ToHostCtrlRbDesc>,
 }
@@ -73,7 +137,8 @@ impl BlueRDMALogic {
         BlueRDMALogic {
             mr_rkey_table: RwLock::new(HashMap::new()),
             qp_table: Arc::new(RwLock::new(QpTable::new(MAX_QP))),
-            raw_pkt_config: RawPktConfig::new(),
+            raw_pkt_buf: RwLock::new(RawPktBuf::new()),
+            net_param: RwLock::new(NetworkParam::new()),
             net_send_agent: net_sender,
             to_host_data_descriptor_queue: work_sender,
             to_host_ctrl_descriptor_queue: ctrl_sender,
@@ -92,7 +157,12 @@ impl BlueRDMALogic {
         }
         let dqp_ip = common.dqp_ip;
         let payload = desc.first_sge_mut().cut(total_length)?;
-        self.net_send_agent.send_raw(dqp_ip, 4791, &payload)?;
+        let buf = payload
+            .direct_data_ptr(true)
+            .ok_or(NetAgentError::InvalidRdmaMessage(
+                "PayloadInfo should have at least one item".to_owned(),
+            ))?;
+        self.net_send_agent.send(buf, buf.len());
         Ok(())
     }
 
@@ -119,7 +189,12 @@ impl BlueRDMALogic {
             payload,
         };
 
-        self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+        self.send_rdma_message(
+            req.common.mac_addr,
+            req.common.dqp_ip,
+            RDMA_DEFAULT_PORT,
+            &msg,
+        )?;
         Ok(())
     }
 
@@ -149,7 +224,12 @@ impl BlueRDMALogic {
             payload: PayloadInfo::new(),
         };
 
-        self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+        self.send_rdma_message(
+            req.common.mac_addr,
+            req.common.dqp_ip,
+            RDMA_DEFAULT_PORT,
+            &msg,
+        )?;
         Ok(())
     }
 
@@ -223,7 +303,12 @@ impl BlueRDMALogic {
                 cur_len -= first_packet_length;
                 psn = psn.wrapping_add(1);
                 cur_va = cur_va.wrapping_add(u64::from(first_packet_length));
-                self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+                self.send_rdma_message(
+                    req.common.mac_addr,
+                    req.common.dqp_ip,
+                    RDMA_DEFAULT_PORT,
+                    &msg,
+                )?;
 
                 // send the middle packets
                 meta_data.reth.len = pmtu;
@@ -239,8 +324,12 @@ impl BlueRDMALogic {
                     cur_len -= pmtu;
                     psn = psn.wrapping_add(1);
                     cur_va = cur_va.wrapping_add(u64::from(pmtu));
-                    self.net_send_agent
-                        .send(req.common.dqp_ip, 4791, &middle_msg)?;
+                    self.send_rdma_message(
+                        req.common.mac_addr,
+                        req.common.dqp_ip,
+                        RDMA_DEFAULT_PORT,
+                        &msg,
+                    )?;
                 }
 
                 // cur_len <= pmtu, send last packet
@@ -257,13 +346,47 @@ impl BlueRDMALogic {
                     meta_data: Metadata::General(meta_data),
                     payload: last_payload,
                 };
-                self.net_send_agent
-                    .send(req.common.dqp_ip, 4791, &last_msg)?;
+                self.send_rdma_message(
+                    req.common.mac_addr,
+                    req.common.dqp_ip,
+                    RDMA_DEFAULT_PORT,
+                    &msg,
+                )?;
             }
             ToCardDescriptor::Read(req) => {
                 self.send_read_packet(&req, common_meta)?;
             }
         }
+        Ok(())
+    }
+
+    fn send_rdma_message(
+        &self,
+        dst_mac: MacAddress,
+        dst_ip: Ipv4Addr,
+        dst_port: u16,
+        message: &RdmaMessage,
+    ) -> Result<(), BlueRdmaLogicError> {
+        let mut buf = [0u8; NET_SERVER_BUF_SIZE];
+        let locked_net_param = self.net_param.read()?;
+        let src_mac = locked_net_param.macaddr;
+        let src_ip = locked_net_param.ipaddr;
+        let src_port = RDMA_DEFAULT_PORT;
+        let ip_id = 0;
+        let total_length = PacketWriter::new(&mut buf)
+            .src_mac(src_mac)
+            .src_addr(src_ip)
+            .src_port(src_port)
+            .dest_mac(dst_mac)
+            .dest_addr(dst_ip)
+            .dest_port(dst_port)
+            .ip_id(ip_id)
+            .message(message)
+            .write()
+            .map_err(|e| NetAgentError::PacketProcess(e))?;
+
+        self.net_send_agent
+            .send(&buf[..total_length], total_length)?;
         Ok(())
     }
 
@@ -314,8 +437,8 @@ impl BlueRDMALogic {
             }
             ToCardCtrlRbDesc::SetNetworkParam(desc) => (desc.common.op_id, true),
             ToCardCtrlRbDesc::SetRawPacketReceiveMeta(desc) => {
-                self.raw_pkt_config
-                    .set_base_addr(desc.base_write_addr as usize);
+                let mut locked_buf = self.raw_pkt_buf.write()?;
+                locked_buf.set_base_addr(desc.base_write_addr);
                 (desc.common.op_id, true)
             }
             ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => {
@@ -441,9 +564,10 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 }
             }
         };
-
+        
         let meta = &message.meta_data;
-        match meta {
+        let mut common = recv_default_meta(&message);
+        let descriptor =  match meta {
             Metadata::General(general_meta) => {
                 let Ok(mut expected_psn_manager) = self.qp_table.write() else {
                     log::error!("Failed to lock the qp table");
@@ -470,17 +594,62 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     && general_meta.common_meta.opcode.is_middle());
                 let need_gen_ack =
                     continous_resp.is_qp_psn_continous && general_meta.common_meta.ack_req;
+
+                match general_meta.common_meta.opcode {
+                    RdmaOpCode::RdmaWriteFirst
+                    | RdmaOpCode::RdmaWriteMiddle
+                    | RdmaOpCode::RdmaWriteLast
+                    | RdmaOpCode::RdmaWriteOnly
+                    | RdmaOpCode::RdmaReadResponseFirst
+                    | RdmaOpCode::RdmaReadResponseMiddle
+                    | RdmaOpCode::RdmaReadResponseLast
+                    | RdmaOpCode::RdmaReadResponseOnly => {
+                        ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
+                            common,
+                            is_read_resp,
+                            write_type,
+                            psn: general_meta.common_meta.psn,
+                            addr: general_meta.reth.va,
+                            len: general_meta.reth.len,
+                            can_auto_ack: false,
+                        })
+                    }
+                    _ => unimplemented!(),
+                }
             }
-            Metadata::Acknowledge(_) => todo!(),
+            Metadata::Acknowledge(header) => {
+                common.status = ToHostWorkRbDescStatus::Normal;
+                match header.aeth_code {
+                    ToHostWorkRbDescAethCode::Ack => ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
+                        common,
+                        #[allow(clippy::cast_possible_truncation)]
+                        msn: crate::types::Msn::new(header.msn as u16), // msn is u16 currently. So we can just truncate it.
+                        value: header.aeth_value,
+                        psn: crate::types::Psn::new(header.common_meta.psn.get()),
+                        code: ToHostWorkRbDescAethCode::Ack,
+                        retry_psn: Psn::default(),
+                    }),
+                    ToHostWorkRbDescAethCode::Rnr
+                    | ToHostWorkRbDescAethCode::Rsvd
+                    | ToHostWorkRbDescAethCode::Nak => {
+                        // just ignore
+                        unimplemented!()
+                    }
+                }
+            }
         }
+        // if the pipe in software is broken, we should panic.
+        self.to_host_data_descriptor_queue
+            .send(descriptor)
+            .expect("software pipe broken");
     }
 
     fn recv_raw(&self, data: &[u8]) {
-        let write_addr = self.raw_pkt_config.get_write_addr();
-        // SAFETY: the software ensure is safe to copy raw packet to base address
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), write_addr as *mut u8, data.len());
-        }
+        let mut locked_buf = self
+            .raw_pkt_buf
+            .write()
+            .expect("fail to lock raw packet buf");
+        locked_buf.put_raw_pkt(data);
     }
 }
 
@@ -524,21 +693,7 @@ mod tests {
         struct DummpyProxy;
 
         impl NetSendAgent for DummpyProxy {
-            fn send(
-                &self,
-                _: Ipv4Addr,
-                _: u16,
-                _message: &RdmaMessage,
-            ) -> Result<(), NetAgentError> {
-                Ok(())
-            }
-
-            fn send_raw(
-                &self,
-                _: Ipv4Addr,
-                _: u16,
-                _payload: &PayloadInfo,
-            ) -> Result<(), NetAgentError> {
+            fn send(&self, data: &[u8], length: usize) -> Result<(), NetAgentError> {
                 Ok(())
             }
         }

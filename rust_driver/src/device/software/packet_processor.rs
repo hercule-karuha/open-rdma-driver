@@ -1,24 +1,31 @@
-use std::net::Ipv4Addr;
-use thiserror::Error;
-
 use super::{
     packet::{
-        
         PacketError, RdmaAcknowledgeHeader, RdmaPacketHeader, RdmaReadRequestHeader,
         RdmaReadResponseFirstHeader, RdmaReadResponseLastHeader, RdmaReadResponseMiddleHeader,
         RdmaReadResponseOnlyHeader, RdmaWriteFirstHeader, RdmaWriteLastHeader,
         RdmaWriteLastWithImmediateHeader, RdmaWriteMiddleHeader, RdmaWriteOnlyHeader,
         RdmaWriteOnlyWithImmediateHeader, BTH,
     },
-    types::{RdmaMessage,RdmaOpCode},
+    types::{RdmaMessage, RdmaOpCode},
 };
+use eui48::MacAddress;
+use pnet::datalink::MacAddr;
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
+use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
+use std::net::Ipv4Addr;
+use thiserror::Error;
 
 use super::packet::{
     ICRC_SIZE, IPV4_DEFAULT_DSCP_AND_ECN, IPV4_DEFAULT_TTL, IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH,
-    IPV4_HEADER_SIZE, IPV4_PROTOCOL_UDP, IPV4_UDP_BTH_HEADER_SIZE, MAC_HEADER_SIZE,
-    MAC_SERVICE_LAYER_IPV4, RDMA_DEFAULT_PORT, UDP_HEADER_SIZE,
+    IPV4_PROTOCOL_UDP, IPV4_UDP_BTH_HEADER_SIZE, MAC_SERVICE_LAYER_IPV4, RDMA_DEFAULT_PORT,
 };
 use crate::device::layout::{Ipv4, Mac, Udp};
+use crate::device::layout::{IPV4_HEADER_SIZE, MAC_HEADER_SIZE, UDP_HEADER_SIZE};
+
+const IP_VERSION_4: u8 = 4;
+const IPV4_HEADER_LEN_DEAFULT: u8 = 5;
 
 pub(crate) struct PacketProcessor;
 
@@ -74,7 +81,7 @@ impl PacketProcessor {
                 let header = RdmaAcknowledgeHeader::from_bytes(buf);
                 Ok(header.to_rdma_message(buf.len())?)
             }
-            _ => Err(PacketError::InvalidOpcode)
+            _ => Err(PacketError::InvalidOpcode),
         }
     }
 
@@ -131,7 +138,7 @@ impl PacketProcessor {
                 let header = RdmaAcknowledgeHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            _ => Err(PacketError::InvalidOpcode)
+            _ => Err(PacketError::InvalidOpcode),
         }
     }
 }
@@ -139,10 +146,14 @@ impl PacketProcessor {
 #[allow(variant_size_differences)]
 #[derive(Error, Debug)]
 pub(crate) enum PacketProcessorError {
+    #[error("missing src_mac")]
+    MissingSrcMac,
     #[error("missing src_addr")]
     MissingSrcAddr,
     #[error("missing src_port")]
     MissingSrcPort,
+    #[error("missing dest_mac")]
+    MissingDestMac,
     #[error("missing dest_addr")]
     MissingDestAddr,
     #[error("missing dest_port")]
@@ -162,8 +173,10 @@ pub(crate) enum PacketProcessorError {
 /// A builder for writing a packet
 pub(crate) struct PacketWriter<'buf, 'message> {
     buf: &'buf mut [u8],
+    src_mac: Option<MacAddr>,
     src_addr: Option<Ipv4Addr>,
     src_port: Option<u16>,
+    dest_mac: Option<MacAddr>,
     dest_addr: Option<Ipv4Addr>,
     dest_port: Option<u16>,
     message: Option<&'message RdmaMessage>,
@@ -174,13 +187,21 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
     pub(crate) fn new(buf: &'buf mut [u8]) -> Self {
         Self {
             buf,
+            src_mac: None,
             src_addr: None,
             src_port: None,
+            dest_mac: None,
             dest_addr: None,
             dest_port: None,
             message: None,
             ip_id: None,
         }
+    }
+
+    pub(crate) fn src_mac(&mut self, mac: MacAddress) -> &mut Self {
+        let new = self;
+        new.src_mac = Some(MacAddr::from(mac.to_array()));
+        new
     }
 
     pub(crate) fn src_addr(&mut self, addr: Ipv4Addr) -> &mut Self {
@@ -192,6 +213,12 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
     pub(crate) fn src_port(&mut self, port: u16) -> &mut Self {
         let new = self;
         new.src_port = Some(port);
+        new
+    }
+
+    pub(crate) fn dest_mac(&mut self, mac: MacAddress) -> &mut Self {
+        let new = self;
+        new.dest_mac = Some(MacAddr::from(mac.to_array()));
         new
     }
 
@@ -249,18 +276,22 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
 
         // write the ip,udp header
         let ip_id = self.ip_id.ok_or(PacketProcessorError::MissingIpId)?;
+        let src_mac = self.src_mac.ok_or(PacketProcessorError::MissingSrcMac)?;
         let src_addr = self.src_addr.ok_or(PacketProcessorError::MissingSrcAddr)?;
         let src_port = self.src_port.ok_or(PacketProcessorError::MissingSrcPort)?;
+        let dest_mac = self.src_mac.ok_or(PacketProcessorError::MissingDestMac)?;
         let dest_addr = self
             .dest_addr
             .ok_or(PacketProcessorError::MissingDestAddr)?;
         let dest_port = self
             .dest_port
             .ok_or(PacketProcessorError::MissingDestPort)?;
-        write_ip_udp_header(
+        write_network_header(
             self.buf,
+            src_mac,
             src_addr,
             src_port,
+            dest_mac,
             dest_addr,
             dest_port,
             total_length_in_u16,
@@ -269,7 +300,7 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
         // compute icrc
         let icrc_buf = self
             .buf
-            .get(0..total_length)
+            .get(MAC_HEADER_SIZE..total_length)
             .ok_or(PacketProcessorError::BufferNotLargeEnough(total_length))?;
         if total_length < ICRC_SIZE {
             return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE));
@@ -314,44 +345,54 @@ pub(crate) fn compute_icrc(data: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// Write the ip and udp header to the buffer
+/// Write the mac, ip and udp header to the buffer
 ///
 /// # Panic
-/// the buffer should be large enough to hold the ip and udp header
-pub(crate) fn write_ip_udp_header(
+/// the buffer should be large enough to hold the mac, ip and udp header
+pub(crate) fn write_network_header(
     buf: &mut [u8],
+    src_mac: MacAddr,
     src_addr: Ipv4Addr,
     src_port: u16,
+    dest_mac: MacAddr,
     dest_addr: Ipv4Addr,
     dest_port: u16,
     total_length: u16,
     ip_identification: u16,
 ) {
-    let mut ip_header = Ipv4(buf);
+    {
+        let mut eth_header =
+            MutableEthernetPacket::new(buf).expect("buffer to small to hold EthernetPacket");
+        eth_header.set_ethertype(EtherTypes::Ipv4);
+        eth_header.set_source(src_mac);
+        eth_header.set_destination(dest_mac);
+    }
 
-    ip_header.set_version_and_len(IPV4_DEFAULT_VERSION_AND_HEADER_LENGTH.into());
-    ip_header.set_dscp_ecn(IPV4_DEFAULT_DSCP_AND_ECN.into());
-    ip_header.set_ttl(IPV4_DEFAULT_TTL.into());
-    ip_header.set_protocol(IPV4_PROTOCOL_UDP.into());
-
-    let src_addr: u32 = src_addr.into();
-    ip_header.set_source(src_addr.to_be());
-    let dst_addr: u32 = dest_addr.into();
-    ip_header.set_destination(dst_addr.to_be());
-
-    ip_header.set_total_length(total_length.into());
-    ip_header.set_fragment_offset(0);
-    ip_header.set_identification(ip_identification.into());
-    ip_header.set_checksum(0);
-
-    let mut udp_header = Udp(&mut ip_header.0[IPV4_HEADER_SIZE..]);
-    udp_header.set_src_port(src_port.to_be());
-    udp_header.set_dst_port(dest_port.to_be());
-
-    #[allow(clippy::cast_possible_truncation)]
-    udp_header.set_length(total_length.wrapping_sub(IPV4_HEADER_SIZE as u16).to_be());
-
-    udp_header.set_checksum(0);
+    {
+        let mut ip_header = MutableIpv4Packet::new(&mut buf[MAC_HEADER_SIZE..])
+            .expect("buffer to small to hold Ipv4Packet");
+        ip_header.set_version(IP_VERSION_4);
+        ip_header.set_header_length(IPV4_HEADER_LEN_DEAFULT);
+        ip_header.set_dscp(0);
+        ip_header.set_ecn(0);
+        ip_header.set_total_length(total_length);
+        ip_header.set_identification(ip_identification);
+        ip_header.set_fragment_offset(0);
+        ip_header.set_ttl(IPV4_DEFAULT_TTL);
+        ip_header.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+        ip_header.set_source(src_addr);
+        ip_header.set_destination(dest_addr);
+        ip_header.set_checksum(0);
+        let ip_checksum = ip_header.get_checksum();
+        ip_header.set_checksum(ip_checksum);
+    }
+    {
+        let mut udp_header = MutableUdpPacket::new(&mut buf[MAC_HEADER_SIZE + IPV4_HEADER_SIZE..])
+            .expect("buffer to small to hold UdpPacket");
+        udp_header.set_source(src_port);
+        udp_header.set_destination(dest_port);
+        udp_header.set_checksum(0);
+    }
 }
 
 /// Assume the buffer is a packet, check if the icrc is valid
@@ -361,44 +402,43 @@ pub(crate) fn write_ip_udp_header(
 /// The function made an assumption that the buffer is a valid RDMA packet, in other words,
 /// it should at least contain the common header, ip header, udp header, bth header and the icrc.
 #[allow(clippy::indexing_slicing)]
-pub(crate) fn is_icrc_valid(received_data: &mut [u8]) -> Result<bool, PacketProcessorError> {
-    let length = received_data.len();
+pub(crate) fn is_icrc_valid(data: &mut [u8]) -> Result<bool, PacketProcessorError> {
+    let length = data.len();
     // chcek the icrc
-    let icrc_array: [u8; 4] = match received_data[length.wrapping_sub(ICRC_SIZE)..length].try_into()
+    let icrc_array: [u8; 4] = match data[length.wrapping_sub(ICRC_SIZE)..length].try_into()
     {
         Ok(arr) => arr,
         #[allow(clippy::cast_possible_truncation)]
         Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE)),
     };
     let origin_icrc = u32::from_le_bytes(icrc_array);
-    received_data[length.wrapping_sub(ICRC_SIZE)..length].copy_from_slice(&[0u8; 4]);
-    let our_icrc = compute_icrc(received_data);
+    data[length.wrapping_sub(ICRC_SIZE)..length].copy_from_slice(&[0u8; 4]);
+    let our_icrc = compute_icrc(data);
     Ok(our_icrc == origin_icrc)
 }
 
-pub(crate) fn check_rdma_pkt(received_data: &[u8]) -> bool {
-    let mac_header = Mac(received_data);
-    if mac_header.get_network_layer_type() != MAC_SERVICE_LAYER_IPV4 as u64 {
+/// Check if the packet is a vaild rdma packet
+/// Return a bool if the the packet is a vaild rdma packet
+pub(crate) fn check_rdma_pkt(data: &[u8]) -> bool {
+    let Some(mac_header) = EthernetPacket::new(data) else {
+        return false;
+    };
+    if mac_header.get_ethertype() != EtherTypes::Ipv4 {
         return false;
     }
 
-    let data_without_mac = &received_data[MAC_HEADER_SIZE..];
-    if data_without_mac.len() < IPV4_HEADER_SIZE {
+    let Some(ipv4_header) = Ipv4Packet::new(&data[MAC_HEADER_SIZE..]) else {
+        return false;
+    };
+    if ipv4_header.get_next_level_protocol() != IpNextHeaderProtocols::Udp {
         return false;
     }
 
-    let ipv4_header = Ipv4(data_without_mac);
-    if ipv4_header.get_protocol() != IPV4_PROTOCOL_UDP as u32 {
+    let Some(udp_header) = UdpPacket::new(&data[MAC_HEADER_SIZE + IPV4_HEADER_SIZE..])
+    else {
         return false;
-    }
-
-    let data_without_macip = &received_data[MAC_HEADER_SIZE + IPV4_HEADER_SIZE..];
-    if data_without_macip.len() < UDP_HEADER_SIZE {
-        return false;
-    }
-
-    let udp_header = Udp(data_without_macip);
-    if udp_header.get_dst_port() != RDMA_DEFAULT_PORT {
+    };
+    if udp_header.get_destination() != RDMA_DEFAULT_PORT {
         return false;
     }
 
