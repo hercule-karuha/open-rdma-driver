@@ -12,7 +12,11 @@ use crate::{
 };
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
-use std::{net::Ipv4Addr, thread::sleep, time::{Duration, Instant}};
+use std::{
+    net::Ipv4Addr,
+    thread::sleep,
+    time::{Duration, Instant},
+};
 
 use super::layout::{
     CmdQueueDescCommonHead, MetaReportQueueDescBthReth, MetaReportQueueDescFragAETH,
@@ -301,23 +305,25 @@ impl From<Sge> for DescSge {
 #[derive(TryFromPrimitive, Debug, Clone)]
 #[repr(u8)]
 pub(crate) enum ToHostWorkRbDescStatus {
-    Normal = 1,
-    InvAccFlag = 2,
-    InvOpcode = 3,
-    InvMrKey = 4,
-    InvMrRegion = 5,
-    Unknown = 6,
+    RdmaReqStNormal = 1,
+    RdmaReqStInvAccFlag = 2,
+    RdmaReqStInvOpcode = 3,
+    RdmaReqStInvMrKey = 4,
+    RdmaReqStInvMrRegion = 5,
+    RdmaReqStUnknown = 6,
+    RdmaReqStInvHeader = 7,
+    // RdmaReqStMaxGuard = 255,
 }
 
 impl Default for ToHostWorkRbDescStatus {
     fn default() -> Self {
-        Self::Normal
+        Self::RdmaReqStNormal
     }
 }
 
 impl ToHostWorkRbDescStatus {
     pub(crate) fn is_ok(&self) -> bool {
-        matches!(self, ToHostWorkRbDescStatus::Normal)
+        matches!(self, ToHostWorkRbDescStatus::RdmaReqStNormal)
     }
 }
 
@@ -1131,7 +1137,7 @@ impl ToHostWorkRbDesc {
                     value,
                     psn,
                     code,
-                    retry_psn
+                    retry_psn,
                 }))
             }
         }

@@ -68,7 +68,7 @@ impl WorkDescPollerContext {
                 }
             };
             debug!("driver read from card RQ: {:?}", &desc);
-            if !matches!(desc.status(), ToHostWorkRbDescStatus::Normal) {
+            if !matches!(desc.status(), ToHostWorkRbDescStatus::RdmaReqStNormal) {
                 error!("desc status is {:?}", desc.status());
                 continue;
             }

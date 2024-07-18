@@ -6,11 +6,11 @@ use super::{
     qp_table::*,
     types::{
         Key, Metadata, PDHandle, PKey, PayloadInfo, Psn, Qpn, RdmaGeneralMeta, RdmaMessage,
-        RdmaMessageMetaCommon, RdmaOpCode, RdmaReqStatus, RethHeader, ToCardDescriptor,
-        ToCardReadDescriptor, ToCardWriteDescriptor,
+        RdmaMessageMetaCommon, RdmaOpCode, RethHeader, ToCardDescriptor, ToCardReadDescriptor,
+        ToCardWriteDescriptor,
     },
+    auto_ack::write_auto_ack,
 };
-use crate::unsafe_tools::{get_raw_pkt_buf, RAW_PKT_BLOCK_SIZE, RAW_PKT_SLOT_NUM};
 use crate::{
     device::{
         CtrlRbDescOpcode, ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc,
@@ -21,6 +21,10 @@ use crate::{
     },
     types::{MemAccessTypeFlag, Msn, Pmtu, QpType},
     utils::get_first_packet_max_length,
+};
+use crate::{
+    types::ThreeBytesStruct,
+    unsafe_tools::{get_raw_pkt_buf, RAW_PKT_BLOCK_SIZE, RAW_PKT_SLOT_NUM},
 };
 use eui48::MacAddress;
 use flume::Sender;
@@ -472,7 +476,10 @@ impl BlueRDMALogic {
     /// * if the permission is valid. If not, return `InvAccFlag`
     /// * if the va and length are valid. If not, return `InvMrRegion`
     /// Otherwise, return `RDMA_REQ_ST_NORMAL`
-    fn do_validation(&self, message: &RdmaMessage) -> Result<RdmaReqStatus, BlueRdmaLogicError> {
+    fn do_validation(
+        &self,
+        message: &RdmaMessage,
+    ) -> Result<ToHostWorkRbDescStatus, BlueRdmaLogicError> {
         match &message.meta_data {
             Metadata::General(common_meta) => {
                 let opcode = &common_meta.common_meta.opcode;
@@ -480,14 +487,14 @@ impl BlueRDMALogic {
                 let qp_table = self.qp_table.read()?;
                 let Some(qp_entry) = qp_table.get_qp_context(common_meta.common_meta.dqpn.clone())
                 else {
-                    return Ok(RdmaReqStatus::RdmaReqStInvHeader);
+                    return Ok(ToHostWorkRbDescStatus::RdmaReqStInvHeader);
                 };
 
                 if !check_opcode_supported(&qp_entry.qp_type, opcode) {
-                    return Ok(RdmaReqStatus::RdmaReqStInvOpcode);
+                    return Ok(ToHostWorkRbDescStatus::RdmaReqStInvOpcode);
                 }
                 if !qp_entry.qp_access_flags.contains(needed_permissions) {
-                    return Ok(RdmaReqStatus::RdmaReqStInvAccFlag);
+                    return Ok(ToHostWorkRbDescStatus::RdmaReqStInvAccFlag);
                 }
 
                 let pmtu = u64::from(&qp_entry.pmtu);
@@ -503,19 +510,19 @@ impl BlueRDMALogic {
                     || (is_mid && eq_pmtu)
                     || (is_last_only && !gt_pmtu))
                 {
-                    return Ok(RdmaReqStatus::RdmaReqStInvHeader);
+                    return Ok(ToHostWorkRbDescStatus::RdmaReqStInvHeader);
                 }
 
                 let r_key = common_meta.reth.rkey;
                 let mr_rkey_table = self.mr_rkey_table.read()?;
                 let Some(mr) = mr_rkey_table.get(&r_key) else {
-                    return Ok(RdmaReqStatus::RdmaReqStInvMrKey);
+                    return Ok(ToHostWorkRbDescStatus::RdmaReqStInvMrKey);
                 };
 
                 let read_guard = mr.read()?;
                 // check the permission.
                 if !read_guard.acc_flags.contains(needed_permissions) {
-                    return Ok(RdmaReqStatus::RdmaReqStInvAccFlag);
+                    return Ok(ToHostWorkRbDescStatus::RdmaReqStInvAccFlag);
                 }
 
                 let va = common_meta.reth.va;
@@ -525,12 +532,12 @@ impl BlueRDMALogic {
                     || read_guard.addr.wrapping_add(read_guard.len as u64)
                         < va.wrapping_add(u64::from(payload_length))
                 {
-                    return Ok(RdmaReqStatus::RdmaReqStInvMrRegion);
+                    return Ok(ToHostWorkRbDescStatus::RdmaReqStInvMrRegion);
                 }
 
-                Ok(RdmaReqStatus::RdmaReqStNormal)
+                Ok(ToHostWorkRbDescStatus::RdmaReqStNormal)
             }
-            Metadata::Acknowledge(_) => Ok(RdmaReqStatus::RdmaReqStNormal),
+            Metadata::Acknowledge(_) => Ok(ToHostWorkRbDescStatus::RdmaReqStNormal),
         }
     }
 }
@@ -541,7 +548,7 @@ unsafe impl Sync for BlueRDMALogic {}
 fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
     #[allow(clippy::cast_possible_truncation)]
     ToHostWorkRbDescCommon {
-        status: ToHostWorkRbDescStatus::Unknown,
+        status: ToHostWorkRbDescStatus::RdmaReqStUnknown,
         trans: ToHostWorkRbDescTransType::Rc,
         dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
         msn: Msn::new(message.meta_data.common_meta().pkey.get()),
@@ -554,7 +561,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
         let message = PacketProcessor::to_rdma_message(data)
             .expect("Fail to convert to rdma message, may be check error?");
         let req_status = if !header_pre_check(data) {
-            RdmaReqStatus::RdmaReqStInvHeader
+            ToHostWorkRbDescStatus::RdmaReqStInvHeader
         } else {
             match self.do_validation(&message) {
                 Ok(status) => status,
@@ -564,10 +571,13 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 }
             }
         };
-        
+
         let meta = &message.meta_data;
         let mut common = recv_default_meta(&message);
-        let descriptor =  match meta {
+        let mut need_report = true;
+        let mut need_gen_ack = false;
+
+        let descriptor = match meta {
             Metadata::General(general_meta) => {
                 let Ok(mut expected_psn_manager) = self.qp_table.write() else {
                     log::error!("Failed to lock the qp table");
@@ -578,7 +588,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 let continous_resp = match expected_psn_manager.check_continous(
                     qpn_idx,
                     general_meta.common_meta.psn,
-                    !req_status.is_nromal(),
+                    !req_status.is_ok(),
                 ) {
                     Some(resp) => resp,
                     None => {
@@ -586,14 +596,21 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     }
                 };
                 let va = general_meta.reth.va;
-                if req_status.is_nromal() && general_meta.has_payload() {
+                if req_status.is_ok() && general_meta.has_payload() {
                     message.payload.copy_to(va as *mut u8);
                 }
 
-                let need_report = !(continous_resp.is_adjacent_psn_continous
+                need_report = !(continous_resp.is_adjacent_psn_continous
                     && general_meta.common_meta.opcode.is_middle());
-                let need_gen_ack =
+                need_gen_ack =
                     continous_resp.is_qp_psn_continous && general_meta.common_meta.ack_req;
+                let is_read_resp = general_meta.common_meta.opcode.is_resp();
+                let write_type = general_meta
+                    .common_meta
+                    .opcode
+                    .write_type()
+                    .unwrap_or(ToHostWorkRbDescWriteType::Only);
+                common.status = ToHostWorkRbDescStatus::from(req_status);
 
                 match general_meta.common_meta.opcode {
                     RdmaOpCode::RdmaWriteFirst
@@ -608,17 +625,46 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                             common,
                             is_read_resp,
                             write_type,
-                            psn: general_meta.common_meta.psn,
+                            psn: ThreeBytesStruct::new(general_meta.common_meta.psn.get()),
                             addr: general_meta.reth.va,
                             len: general_meta.reth.len,
                             can_auto_ack: false,
+                        })
+                    }
+                    RdmaOpCode::RdmaWriteLastWithImmediate
+                    | RdmaOpCode::RdmaWriteOnlyWithImmediate => {
+                        ToHostWorkRbDesc::WriteWithImm(ToHostWorkRbDescWriteWithImm {
+                            common,
+                            write_type,
+                            psn: ThreeBytesStruct::new(general_meta.common_meta.psn.get()),
+                            imm: general_meta.imm.unwrap_or_else(|| {
+                                log::error!("The immediate data is not found");
+                                0
+                            }),
+                            addr: general_meta.reth.va,
+                            len: general_meta.reth.len,
+                            key: general_meta.reth.rkey.into(),
+                        })
+                    }
+                    RdmaOpCode::RdmaReadRequest => {
+                        let Some(sec_reth) = general_meta.secondary_reth else {
+                            log::error!("The secondary reth is not found");
+                            return;
+                        };
+                        ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
+                            common,
+                            len: general_meta.reth.len,
+                            laddr: general_meta.reth.va,
+                            lkey: general_meta.reth.rkey.into(),
+                            raddr: sec_reth.va,
+                            rkey: sec_reth.rkey.into(),
                         })
                     }
                     _ => unimplemented!(),
                 }
             }
             Metadata::Acknowledge(header) => {
-                common.status = ToHostWorkRbDescStatus::Normal;
+                common.status = ToHostWorkRbDescStatus::RdmaReqStNormal;
                 match header.aeth_code {
                     ToHostWorkRbDescAethCode::Ack => ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                         common,
@@ -627,7 +673,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                         value: header.aeth_value,
                         psn: crate::types::Psn::new(header.common_meta.psn.get()),
                         code: ToHostWorkRbDescAethCode::Ack,
-                        retry_psn: Psn::default(),
+                        retry_psn: ThreeBytesStruct::new(0),
                     }),
                     ToHostWorkRbDescAethCode::Rnr
                     | ToHostWorkRbDescAethCode::Rsvd
@@ -637,11 +683,14 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     }
                 }
             }
+        };
+
+        if need_report {
+            // if the pipe in software is broken, we should panic.
+            self.to_host_data_descriptor_queue
+                .send(descriptor)
+                .expect("software pipe broken");
         }
-        // if the pipe in software is broken, we should panic.
-        self.to_host_data_descriptor_queue
-            .send(descriptor)
-            .expect("software pipe broken");
     }
 
     fn recv_raw(&self, data: &[u8]) {
