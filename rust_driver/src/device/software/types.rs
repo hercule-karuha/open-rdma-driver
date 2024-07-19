@@ -145,24 +145,6 @@ impl RdmaOpCode {
         )
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum RdmaReqStatus {
-    RdmaReqStNormal = 1,
-    RdmaReqStInvAccFlag = 2,
-    RdmaReqStInvOpcode = 3,
-    RdmaReqStInvMrKey = 4,
-    RdmaReqStInvMrRegion = 5,
-    RdmaReqStUnknown = 6,
-    RdmaReqStInvHeader = 7,
-    // RdmaReqStMaxGuard = 255,
-}
-
-impl RdmaReqStatus {
-    pub(crate) fn is_nromal(&self) -> bool {
-        matches!(self, RdmaReqStatus::RdmaReqStNormal)
-    }
-}
 
 /// Queue Pair Number
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
@@ -460,6 +442,8 @@ pub(crate) struct RdmaMessageMetaCommon {
     pub(crate) dqpn: Qpn,
     pub(crate) ack_req: bool,
     pub(crate) psn: Psn,
+    pub(crate) peer_qp: Qpn,
+    pub(crate) expected_psn: Psn,
 }
 
 impl TryFrom<&BTH> for RdmaMessageMetaCommon {
@@ -475,6 +459,8 @@ impl TryFrom<&BTH> for RdmaMessageMetaCommon {
             dqpn: Qpn(bth.get_destination_qpn()),
             ack_req: bth.get_ack_req(),
             psn: Psn::new(bth.get_psn()),
+            peer_qp: Qpn::new(0),
+            expected_psn: Psn::new(0),
         })
     }
 }

@@ -3,7 +3,7 @@ use super::types::RdmaOpCode;
 use crate::device::layout::{Aeth, Bth, NReth};
 use crate::device::ToHostWorkRbDescTransType;
 use crate::responser::ACKPACKET_SIZE;
-use crate::types::{Psn, Qpn};
+use super::types::{Psn, Qpn};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};

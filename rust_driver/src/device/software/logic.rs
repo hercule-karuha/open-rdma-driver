@@ -1,5 +1,6 @@
 use super::{
-    header_check::*,
+    auto_ack::write_auto_ack,
+    header_process::*,
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent, NET_SERVER_BUF_SIZE},
     packet::RDMA_DEFAULT_PORT,
     packet_processor::{PacketProcessor, PacketWriter},
@@ -9,7 +10,6 @@ use super::{
         RdmaMessageMetaCommon, RdmaOpCode, RethHeader, ToCardDescriptor, ToCardReadDescriptor,
         ToCardWriteDescriptor,
     },
-    auto_ack::write_auto_ack,
 };
 use crate::{
     device::{
@@ -19,6 +19,7 @@ use crate::{
         ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         ToHostWorkRbDescWriteWithImm,
     },
+    responser::ACKPACKET_SIZE,
     types::{MemAccessTypeFlag, Msn, Pmtu, QpType},
     utils::get_first_packet_max_length,
 };
@@ -256,6 +257,8 @@ impl BlueRDMALogic {
                 dqpn: Qpn::new(common.dqpn.get()),
                 ack_req: false,
                 psn: Psn::new(common.psn.get()),
+                expected_psn: Psn::new(0),
+                peer_qp: Qpn::new(0),
             }
         };
 
@@ -478,17 +481,19 @@ impl BlueRDMALogic {
     /// Otherwise, return `RDMA_REQ_ST_NORMAL`
     fn do_validation(
         &self,
-        message: &RdmaMessage,
+        message: &mut RdmaMessage,
     ) -> Result<ToHostWorkRbDescStatus, BlueRdmaLogicError> {
-        match &message.meta_data {
+        match &mut message.meta_data {
             Metadata::General(common_meta) => {
                 let opcode = &common_meta.common_meta.opcode;
+
                 let needed_permissions = common_meta.needed_permissions();
                 let qp_table = self.qp_table.read()?;
                 let Some(qp_entry) = qp_table.get_qp_context(common_meta.common_meta.dqpn.clone())
                 else {
                     return Ok(ToHostWorkRbDescStatus::RdmaReqStInvHeader);
                 };
+                common_meta.common_meta.peer_qp = qp_entry.peer_qp;
 
                 if !check_opcode_supported(&qp_entry.qp_type, opcode) {
                     return Ok(ToHostWorkRbDescStatus::RdmaReqStInvOpcode);
@@ -558,12 +563,13 @@ fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
 
 impl NetReceiveLogic<'_> for BlueRDMALogic {
     fn recv(&self, data: &[u8]) {
-        let message = PacketProcessor::to_rdma_message(data)
+        let incoming_addr = extract_mac_and_ip(data);
+        let mut message = PacketProcessor::to_rdma_message(data)
             .expect("Fail to convert to rdma message, may be check error?");
         let req_status = if !header_pre_check(data) {
             ToHostWorkRbDescStatus::RdmaReqStInvHeader
         } else {
-            match self.do_validation(&message) {
+            match self.do_validation(&mut message) {
                 Ok(status) => status,
                 Err(_) => {
                     log::error!("Failed to validate the rkey");
@@ -611,6 +617,20 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     .write_type()
                     .unwrap_or(ToHostWorkRbDescWriteType::Only);
                 common.status = ToHostWorkRbDescStatus::from(req_status);
+
+                let net_work = self.net_param.read().expect("fail to lock net param");
+                let mut buf = [0u8; NET_SERVER_BUF_SIZE];
+                if need_gen_ack {
+                    write_auto_ack(
+                        &mut buf,
+                        (MacAddr::from(net_work.macaddr.to_array()), net_work.ipaddr),
+                        incoming_addr,
+                        general_meta.common_meta.pkey.get(),
+                        continous_resp.expected_psn,
+                        general_meta.common_meta.peer_qp,
+                    )
+                }
+                self.net_send_agent.send(&buf, ACKPACKET_SIZE);
 
                 match general_meta.common_meta.opcode {
                     RdmaOpCode::RdmaWriteFirst

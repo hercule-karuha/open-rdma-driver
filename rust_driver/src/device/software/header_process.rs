@@ -1,6 +1,13 @@
+use std::net::Ipv4Addr;
+
+use eui48::MacAddress;
+use pnet::packet::ethernet::EthernetPacket;
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::util::MacAddr;
+
 use super::packet::BTH_HEADER_SIZE;
 use super::types::{Key, PDHandle, RdmaOpCode};
-use crate::device::layout::{Aeth, Bth};
+use crate::device::layout::{Aeth, Bth, MAC_HEADER_SIZE};
 use crate::types::QpType;
 
 /// do bth zero field check and pad count check
@@ -77,4 +84,16 @@ pub(super) fn check_opcode_supported(qp_type: &QpType, opcode: &RdmaOpCode) -> b
         },
         _ => false,
     }
+}
+
+pub(super) fn extract_mac_and_ip(data: &[u8]) -> (MacAddr, Ipv4Addr) {
+    let Some(mac_header) = EthernetPacket::new(data) else {
+        return (MacAddr::zero(), Ipv4Addr::new(0, 0, 0, 0));
+    };
+    let mac = mac_header.get_source();
+    let Some(ip_header) = Ipv4Packet::new(&data[MAC_HEADER_SIZE..]) else {
+        return (MacAddr::zero(), Ipv4Addr::new(0, 0, 0, 0));
+    };
+    let ip = ip_header.get_source();
+    (mac, ip)
 }
